@@ -227,8 +227,7 @@ void menu_system(void *_)
                                          .value = settings.lid_close_action,
                                          .action = action_setLidCloseAction},
                                      "Choose what happens when \n"
-                                     "you close the lid."
-                                     );
+                                     "you close the lid.");
         }
         list_addItemWithInfoNote(&_menu_system,
                                  (ListItem){

@@ -384,7 +384,7 @@ void suspend_exec(int timeout)
     uint32_t killexit = 0;
     int suspend_lid_state = read_lid_state(); // Store initial lid state
     int suspend_start = getMilliseconds();
-    
+
     // Use shorter poll timeout for lid detection on flip devices
     int poll_timeout = (DEVICE_ID == MIYOO285) ? 500 : ((timeout == -1) ? -1 : timeout);
 
@@ -437,7 +437,7 @@ void suspend_exec(int timeout)
                 }
                 continue;
             }
-            
+
             // Original timeout shutdown behavior (non-flip devices)
             system_powersave_off();
             resume();
@@ -448,7 +448,7 @@ void suspend_exec(int timeout)
 
     // resume
     system_powersave_off();
-    
+
     if (killexit) {
         resume();
         usleep(150000);
@@ -558,21 +558,21 @@ int read_lid_state(void)
     if (DEVICE_ID != MIYOO285) {
         return -1; // Not a flip
     }
-    
+
     FILE *fp = fopen("/sys/devices/soc0/soc/soc:hall-mh248/hallvalue", "r");
     if (!fp) {
         return -1; // Error reading lid state
     }
-    
+
     char buf[2];
     size_t read_bytes = fread(buf, 1, 1, fp);
     fclose(fp);
-    
+
     if (read_bytes != 1) {
         return -1;
     }
-    
-    return (buf[0] == '1') ? 1 : 0;  // '1' = open, '0' = closed
+
+    return (buf[0] == '1') ? 1 : 0; // '1' = open, '0' = closed
 }
 
 //
@@ -587,7 +587,7 @@ int main(void)
     log_setName("keymon");
 
     getDeviceModel();
-    
+
     printf_debug("Device detected: DEVICE_ID=%d (283=MM, 285=Flip, 354=Plus)", DEVICE_ID);
 
     if (HAS_AXP()) {
@@ -650,7 +650,8 @@ int main(void)
             print_debug("Warning: Unable to read lid state, assuming open");
             last_lid_state = 1;
             current_lid_state = 1;
-        } else {
+        }
+        else {
             printf_debug("Initial lid state: %s", last_lid_state == 1 ? "open" : "closed");
         }
     }
@@ -666,7 +667,7 @@ int main(void)
     while (1) {
         int poll_timeout_ms = (DEVICE_ID == MIYOO285) ? 500 : ((CHECK_SEC - elapsed_sec) * 1000);
         int poll_result = poll(fds, 1, poll_timeout_ms);
-        
+
         if (poll_result > 0) {
             if (!keyinput_isValid())
                 continue;
@@ -1062,42 +1063,42 @@ int main(void)
 
             hibernate_start = getMilliseconds();
         }
-        
+
         // Check lid state for Miyoo Mini Flip - poll every iteration (500ms)
         if (DEVICE_ID == MIYOO285) {
             current_lid_state = read_lid_state();
-            
-            if (current_lid_state != -1 && last_lid_state != -1 && 
+
+            if (current_lid_state != -1 && last_lid_state != -1 &&
                 current_lid_state != last_lid_state) {
-                
+
                 printf_debug("Lid state change: %d -> %d", last_lid_state, current_lid_state);
-                
+
                 if (current_lid_state == 0) {
                     printf_debug("Lid closed detected, action: %d", settings.lid_close_action);
-                    
+
                     switch (settings.lid_close_action) {
-                        case 0: // Suspend
-                            if (settings.disable_standby) {
-                                deepsleep();
-                            }
-                            else {
-                                turnOffScreen();
-                                hibernate_start = getMilliseconds();
-                            }
-                            break;
-                        case 1: // Shutdown
-                            print_debug("Shutting down due to lid close");
+                    case 0: // Suspend
+                        if (settings.disable_standby) {
                             deepsleep();
-                            break;
-                        case 2: // Nothing
-                            print_debug("Lid close action: Nothing");
-                            break;
+                        }
+                        else {
+                            turnOffScreen();
+                            hibernate_start = getMilliseconds();
+                        }
+                        break;
+                    case 1: // Shutdown
+                        print_debug("Shutting down due to lid close");
+                        deepsleep();
+                        break;
+                    case 2: // Nothing
+                        print_debug("Lid close action: Nothing");
+                        break;
                     }
                 }
                 else {
                     print_debug("Lid opened detected");
                 }
-                
+
                 last_lid_state = current_lid_state;
             }
             // Update last_lid_state even if it hasn't changed to handle initial -1 case
@@ -1107,7 +1108,7 @@ int main(void)
         }
 
         checkHeadphoneJack();
-        
+
         elapsed_sec = (getMilliseconds() - ticks) / 1000;
         if (elapsed_sec < CHECK_SEC)
             continue;
