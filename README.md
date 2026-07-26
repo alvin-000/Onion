@@ -1,3 +1,9 @@
+The Miyoo Mini Flip (and Mini V4) use a different screen resolution from the original Miyoo Mini and Plus models, which is not officially supported by OnionOS. Though the latest version will load there is a signficant amount of garbling on the display when starting and exiting apps/games due to the resolution shift. Like
+
+<img width="890" height="746" alt="image" src="https://github.com/user-attachments/assets/1a784bd9-010e-4044-ae38-89975929be53" />
+
+To prevent some of this a watcher function was added to stop apps and retroarch from switching to the screen's native resolution. This does mean you are no longer getting the best resolution. When such is not possible, such as bootup, I try blank out the frame buffer so the garbling is less obvious for a visually better experience. This is a trade off patch, not a true fix with new resolution support. 
+
 <p>&nbsp;</p>
 
 # <img alt="Onion" src="https://user-images.githubusercontent.com/44569252/179510333-40793fbc-f2a3-4269-8ab9-569b191d423f.png" width="196px">
