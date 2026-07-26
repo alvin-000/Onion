@@ -4,6 +4,15 @@ miyoodir=/mnt/SDCARD/miyoo
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
 
+# Clamp unintended switches to the panel's native mode (752x560 devices:
+# Mini Flip / Mini v4). Exported rather than added per launch site because the
+# binaries that do it are spawned from several places - keymon's system() calls
+# reach gameSwitcher --overlay and infoPanel, for instance, which no runtime.sh
+# launch line covers. Launches that set LD_PRELOAD explicitly (RetroArch) will
+# override this, which is intended: a game owns its own mode.
+# No-op on 640x480 panels - see src/libfbclamp/fbclamp.c.
+export LD_PRELOAD="$miyoodir/lib/libfbclamp.so"
+
 logfile=$(basename "$0" .sh)
 . $sysdir/script/log.sh
 
@@ -13,6 +22,55 @@ MODEL_MMP=354
 screen_resolution="640x480"
 
 main() {
+    # Force the UI mode before anything draws.
+    #
+    # On 752x560 panels the firmware hands over a framebuffer in its native
+    # mode, and everything Onion draws is 640 wide - so until this runs, any
+    # early output is scanned out at the wrong stride and garbles. fbwatch
+    # corrects it too, but not until ~7.8s: it starts later and then waits for
+    # the panel timing to become readable, leaving ~700ms of exposure.
+    #
+    # Blank across it - the firmware has already exported the PWM by this point
+    # (measured: duty 40 at 7.76s), so this is available even though Onion does
+    # not configure the backlight until init_system().
+    #
+    # No-op on 640x480 panels: the geometry is already correct, so fbset does
+    # nothing and the blank is imperceptible.
+    # Everything in this block is for 752x560 panels only. On 640x480 panels
+    # the geometry is already correct and none of the early-boot artifacts
+    # exist, so touching the framebuffer or the backlight there would be pure
+    # cost - in particular the fbset below would drop yres_virtual from the
+    # 1440 those devices ship with to 960, changing buffering for the session.
+    _is752=0
+    if grep -q "Current TimingWidth=752" /proc/mi_modules/fb/mi_fb0 2> /dev/null; then
+        _is752=1
+    fi
+
+    _bl=/sys/class/pwm/pwmchip0/pwm0/duty_cycle
+    _bl_prev=""
+    if [ $_is752 -eq 1 ] && [ -w "$_bl" ]; then
+        _bl_prev=$(cat "$_bl" 2> /dev/null)
+        echo 0 > "$_bl" 2> /dev/null
+        # duty=0 can leave the panel faintly lit; disabling the PWM is how
+        # Onion itself blanks (bin/adv/advexec.sh).
+        echo 0 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
+    if [ $_is752 -eq 1 ]; then
+        fbset -g 640 480 640 960 32 2> /dev/null
+        usleep 400000
+    fi
+
+    # On 752x560 panels stay dark from here until bootScreen draws the loader
+    # (see init_system()). Early boot on these panels produces several
+    # unrelated artifacts - the framebuffer arriving in native mode, the LCD
+    # re-init re-timing the panel, and others not fully identified - and
+    # blanking them individually just moved the problem into the gaps between
+    # blanks. Covering the whole stretch is a net improvement even though a
+    # brief artifact still shows just before the loader.
+    if [ -n "$_bl_prev" ] && [ $_is752 -eq 0 ]; then
+        echo "$_bl_prev" > "$_bl" 2> /dev/null
+    fi
+
     # Set model ID based on hardware detection
     if [ -e /sys/devices/soc0/soc/soc:hall-mh248/hallvalue ] || [ -e /dev/input/event1 ]; then
         export DEVICE_ID=$MODEL_MMF
@@ -35,6 +93,13 @@ main() {
     touch /tmp/is_booting
     check_installer
     clear_logs
+
+    # Keep the fb mode pinned (752x560-panel devices: Mini Flip / Mini v4).
+    # Must start before init_system: the LCD init there (cat /proc/ls) is when
+    # the boot-time garbling happens. Self-exits on 640x480 panels, and waits
+    # for the panel to report before deciding. See script/fbwatch.sh.
+    echo -n "640x480" > /tmp/fb_target_res
+    sh $sysdir/script/fbwatch.sh &
 
     init_system
     update_time
@@ -79,7 +144,21 @@ main() {
     fi
 
     cd $sysdir
+    # Draw the loader onto known-black memory rather than whatever early boot
+    # left behind. The panel is dark here, so this costs nothing visually.
+    if [ $_is752 -eq 1 ]; then
+        cat /dev/zero > /dev/fb0 2> /dev/null
+    fi
+
     bootScreen "Boot"
+
+    # Loader is on screen - light the panel again. See init_system().
+    if [ $_is752 -eq 1 ] && [ -n "$brightness_raw" ] &&
+        [ -w /sys/class/pwm/pwmchip0/pwm0/duty_cycle ]; then
+        usleep 300000
+        echo "$brightness_raw" > /sys/class/pwm/pwmchip0/pwm0/duty_cycle 2> /dev/null
+        echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
 
     # Set filebrowser branding to "Onion" and apply custom theme
     if [ -f "$sysdir/config/filebrowser/first.run" ]; then
@@ -236,7 +315,7 @@ launch_main_ui() {
     cd $miyoodir/app
     PATH="$miyoodir/app:$PATH" \
         LD_LIBRARY_PATH="$miyoodir/lib:/config/lib:/lib" \
-        LD_PRELOAD="$miyoodir/lib/libpadsp.so" \
+        LD_PRELOAD="$miyoodir/lib/libfbclamp.so:$miyoodir/lib/libpadsp.so" \
         ./MainUI 2>&1 > /dev/null
 
     # Merge the last game launched into the recent list
@@ -308,7 +387,43 @@ change_resolution() {
 
     bootScreen clear
 
+    # Zero the whole aperture (it spans both modes) so the region that becomes
+    # visible when growing 640x480 -> 752x560 is already black, rather than
+    # stale content scanned out at the new stride.
+    cat /dev/zero > /dev/fb0 2> /dev/null
+
+    # On 752x560 panels the GOP scaler reconfiguration is itself visibly
+    # garbled, independent of framebuffer contents - verified on a Mini Flip by
+    # switching modes with an all-zero aperture and nothing drawing, which still
+    # garbled. It cannot be prevented from userspace, so blank the backlight
+    # across the switch and show a brief black instead. MinUI does the same
+    # around its LCD init.
+    _bl=/sys/class/pwm/pwmchip0/pwm0/duty_cycle
+    _bl_prev=""
+    if [ -w "$_bl" ]; then
+        _bl_prev=$(cat "$_bl" 2> /dev/null)
+        echo 0 > "$_bl" 2> /dev/null
+    fi
+
+    # Publish the new target only once the panel is dark. libfbclamp rewrites
+    # any mode set that disagrees with this file, so writing it earlier makes
+    # the *next* process to touch the framebuffer perform the switch - lit.
+    # bootScreen clear above does exactly that: its display_reset() writes the
+    # current mode back, which would be clamped to the new one and switch the
+    # display before this blank. Set it here so the first write that lands on
+    # the new mode is the fbset below, inside the dark window.
+    echo -n "${res_x}x${res_y}" > /tmp/fb_target_res
+
     fbset -g "$res_x" "$res_y" "$res_x" "$((res_y * 2))" 32
+
+    # Let the scaler settle before the panel is lit again. 150ms was not
+    # enough - the tail of the reconfiguration was still visible, most obviously
+    # on a switch that closely follows another (exit then immediately relaunch).
+    usleep 400000
+
+    if [ -n "$_bl_prev" ]; then
+        echo "$_bl_prev" > "$_bl" 2> /dev/null
+    fi
     # inform batmon and keymon of resolution change
     killall -SIGUSR1 batmon
     killall -SIGUSR1 keymon
@@ -652,7 +767,7 @@ launch_switcher() {
     log "\n:: Launch switcher"
     cd $sysdir
     start_audioserver
-    LD_PRELOAD="$miyoodir/lib/libpadsp.so" gameSwitcher
+    LD_PRELOAD="$miyoodir/lib/libfbclamp.so:$miyoodir/lib/libpadsp.so" gameSwitcher
     rm $sysdir/.runGameSwitcher
     set_prev_state "switcher"
     sync
@@ -745,10 +860,29 @@ get_screen_resolution() {
         touch /tmp/get_screen_resolution_failed
     fi
 
-    if [ "$screen_resolution" = "752x560" ] && [ "$(/etc/fw_printenv miyoo_version | cut -d'=' -f2)" -ge "202310271401" ]; then
+    # 560p game rendering is opt-in via config/.enable560p.
+    #
+    # When enabled, RetroArch switches the framebuffer to the panel's native
+    # 752x560 per game and back on exit. Every such switch is a visible GOP
+    # scaler reconfiguration (measured on a Mini Flip: switching with an
+    # all-zero framebuffer and nothing drawing still garbles), so each one has
+    # to be hidden behind a backlight blank. Worse, on a relaunch RetroArch has
+    # been observed still rendering 640x480 into the 752x560 buffer - 480 rows
+    # of content in a 560-row framebuffer, read at the wrong stride - which no
+    # amount of mode management fixes.
+    #
+    # Left off, the framebuffer stays 640x480 for the whole session and the GOP
+    # upscales it to the panel exactly as it does for the UI: no switch, no
+    # mismatch, no artifact. Games render slightly softer.
+    #
+    # 640x480 panels are unaffected either way - they never had a mode to
+    # change to.
+    if [ "$screen_resolution" = "752x560" ] &&
+        [ "$(/etc/fw_printenv miyoo_version | cut -d'=' -f2)" -ge "202310271401" ] &&
+        [ -f "$sysdir/config/.enable560p" ]; then
         touch /tmp/new_res_available
     else
-        # can't use 752x560 without appropriate firmware or screen
+        # can't use 752x560 without appropriate firmware, screen, or opt-in
         screen_resolution="640x480"
     fi
 
@@ -789,6 +923,15 @@ init_system() {
     load_settings
 
     # init_lcd
+    #
+    # This re-initialises/re-times the panel and is visible on 752x560 panels.
+    # It is not a framebuffer mode problem: the mode is already 640x480 here
+    # and fbwatch records no correction. Blank across it.
+    if [ "$_is752" = "1" ] && [ -w /sys/class/pwm/pwmchip0/pwm0/duty_cycle ]; then
+        echo 0 > /sys/class/pwm/pwmchip0/pwm0/duty_cycle 2> /dev/null
+        echo 0 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
+
     cat /proc/ls
     sleep 0.25
 
@@ -818,6 +961,14 @@ init_system() {
     echo $frequency > /sys/class/pwm/pwmchip0/pwm0/period
     echo $brightness_raw > /sys/class/pwm/pwmchip0/pwm0/duty_cycle
     echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable
+
+    # Back to dark on 752x560 panels - main() lights up once bootScreen has
+    # drawn the loader. $brightness_raw carries over; init_system() runs in the
+    # same shell as main().
+    if grep -q "Current TimingWidth=752" /proc/mi_modules/fb/mi_fb0 2> /dev/null; then
+        echo 0 > /sys/class/pwm/pwmchip0/pwm0/duty_cycle 2> /dev/null
+        echo 0 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
 
     get_screen_resolution
 }
