@@ -2,7 +2,7 @@ The Miyoo Mini Flip (and Mini V4) use a different screen resolution from the ori
 
 <img width="890" height="746" alt="image" src="https://github.com/user-attachments/assets/1a784bd9-010e-4044-ae38-89975929be53" />
 
-To prevent some of this a watcher function was added to stop apps and retroarch from switching to the screen's native resolution. This does mean you are no longer getting the best resolution. When such is not possible, such as bootup, I try blank out the frame buffer so the garbling is less obvious for a visually better experience. This is a trade off patch, not a true fix with new resolution support. 
+To prevent some of this a watcher function was added to stop apps and retroarch from switching to the screen's native resolution. This does mean you are no longer getting the best resolution. When such is not possible, such as bootup, I try blank out the frame buffer so the garbling is less obvious for a visually better experience. This is a trade off patch, not a true fix with new resolution support. There is still some garbling on setup. 
 
 <p>&nbsp;</p>
 
