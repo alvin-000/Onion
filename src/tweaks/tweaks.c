@@ -1,3 +1,4 @@
+#include <SDL/SDL_rotozoom.h>
 #include <dirent.h>
 #include <linux/input.h>
 #include <stdbool.h>
@@ -75,7 +76,7 @@ int main(int argc, char *argv[])
     signal(SIGTERM, sigHandler);
 
     if (use_display || strlen(apply_tool) == 0)
-        SDL_InitDefault();
+        SDL_InitDefault(zoomSurface);
 
     settings_load();
 

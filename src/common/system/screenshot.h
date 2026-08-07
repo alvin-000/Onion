@@ -69,19 +69,45 @@ bool __get_path_recent(char *path_out)
     return i <= 999;
 }
 
+//
+//    Grab the buffer currently being scanned out, tightly packed.
+//
+//    Sized from the render resolution, which is what screenshot_save() writes -
+//    it used to be sized from DISPLAY_WIDTH/HEIGHT (the physical panel, read
+//    from /tmp/screen_resolution) while the PNG was written at g_display's
+//    render resolution, so the two disagreed whenever the framebuffer was not
+//    in the panel's native mode. Copied row by row because the driver's stride
+//    is not necessarily width * 4.
+//
 uint32_t *__screenshot_buffer(void)
 {
-    size_t buffer_size = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint32_t);
-    uint32_t *buffer = (uint32_t *)malloc(buffer_size);
+    int w, h, stride_px, y;
+    size_t buffer_size;
+    uint32_t *buffer;
+    const uint32_t *src;
 
-    ioctl(fb_fd, FBIOGET_VSCREENINFO, &g_display.vinfo);
-    memcpy(buffer, g_display.fb_addr + DISPLAY_WIDTH * g_display.vinfo.yoffset, buffer_size);
+    display_refreshVinfo();
+
+    w = (int)g_display.vinfo.xres;
+    h = (int)g_display.vinfo.yres;
+    if (!g_display.fb_addr || w <= 0 || h <= 0)
+        return NULL;
+
+    stride_px = g_display.stride > 0 ? g_display.stride / (int)sizeof(uint32_t) : w;
+
+    buffer_size = (size_t)w * (size_t)h * sizeof(uint32_t);
+    if (!(buffer = (uint32_t *)malloc(buffer_size)))
+        return NULL;
+
+    src = g_display.fb_addr + (size_t)g_display.vinfo.yoffset * (size_t)stride_px;
+    for (y = 0; y < h; y++)
+        memcpy(buffer + (size_t)y * w, src + (size_t)y * stride_px, (size_t)w * sizeof(uint32_t));
 
     return buffer;
 }
 
 /**
- * @brief Screenshot (640x480x32bpp only, rotate180, png)
+ * @brief Screenshot (32bpp only, rotate180, png)
  * 
  * @param buffer pointer to the frame buffer
  * @param screenshot_path image file save path
@@ -90,15 +116,20 @@ uint32_t *__screenshot_buffer(void)
  */
 bool screenshot_save(const uint32_t *buffer, const char *screenshot_path, bool rotate180)
 {
-    uint32_t *src;
-    uint32_t line_buffer[g_display.width], x, y, pix;
+    uint32_t *src, x, y, pix;
 
     FILE *fp;
     png_structp png_ptr;
     png_infop info_ptr;
 
-    // make sure render resolution is up to date
+    if (buffer == NULL)
+        return false;
+
+    // make sure render resolution is up to date - before line_buffer is sized
+    // from it, or a mode change between init and here overflows the row.
     display_getRenderResolution();
+
+    uint32_t line_buffer[g_display.width];
 
     if (!(fp = file_open_ensure_path(screenshot_path, "wb"))) {
         return false;
@@ -152,7 +183,7 @@ bool __screenshot_perform(bool(get_path)(char *), pid_t p_id)
         kill(p_id, SIGCONT);
     }
 
-    if (get_path(path)) {
+    if (buffer != NULL && get_path(path)) {
         retval = screenshot_save(buffer, path, true);
     }
 

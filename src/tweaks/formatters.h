@@ -45,7 +45,13 @@ void formatter_timezone(void *pt, char *out_label)
         strcpy(out_label, "UTC");
     }
     else {
-        sprintf(out_label, utc_value > 0.0 ? "UTC+%02d:%02d" : "UTC-%02d:%02d", (int)floor(abs(utc_value)), half_past ? 30 : 0);
+        // fabs, not abs: abs() takes an int, so the double was truncated
+        // toward zero before the call and floor() then had nothing to do.
+        // Output is unchanged for every value this menu can produce - the
+        // range is whole and half hours, where truncation and floor(fabs())
+        // agree - but the implicit conversion is a trap for anyone who
+        // changes the step.
+        sprintf(out_label, utc_value > 0.0 ? "UTC+%02d:%02d" : "UTC-%02d:%02d", (int)floor(fabs(utc_value)), half_past ? 30 : 0);
     }
 }
 
@@ -53,8 +59,19 @@ void formatter_Time(void *pt, char *out_label)
 {
     ListItem *item = (ListItem *)pt;
     int value = item->value;
-    int hours = value / 4;
-    int minutes = (value % 4) * 15;
+    int hours, minutes;
+
+    // The menu declares value_max = 95 - 24 hours in 15-minute steps - but the
+    // formatter never enforced it, so the width of what it wrote was unbounded.
+    // Callers pass a 10-byte buffer (see action_blueLightTimeOn). Clamped, this
+    // is at most "23:45".
+    if (value < 0)
+        value = 0;
+    if (value > 95)
+        value = 95;
+
+    hours = value / 4;
+    minutes = (value % 4) * 15;
     sprintf(out_label, "%02d:%02d", hours, minutes);
 }
 

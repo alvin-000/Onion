@@ -203,14 +203,33 @@ int str_count_char(const char *str, char ch)
     return count;
 }
 
+//
+//    Does this string need a wide-coverage font?
+//
+//    The name is a misnomer kept for its one caller (playActivityUI, choosing
+//    between Exo-2 and wqy-microhei for ROM names). What it actually reports is
+//    "contains a non-ASCII byte", and that is the right question to ask there:
+//    Exo-2 is a Latin display font, wqy-microhei covers CJK, kana, Hangul,
+//    Cyrillic and Greek. Anything outside ASCII is safer rendered with the
+//    latter.
+//
+//    This used to read `c >= 0x80 && c <= 0x9FFF` with `c` an unsigned char.
+//    The second test is always true for a value that cannot exceed 255, so the
+//    whole condition was already just `c >= 0x80` - GCC flags it under
+//    -Wtype-limits. The intent was evidently a Unicode *codepoint* range, but
+//    the loop walks UTF-8 *bytes*, so no codepoint test was ever happening.
+//
+//    Deliberately not "fixed" into a real CJK codepoint check: that would send
+//    Cyrillic and Greek names to Exo-2, which cannot render them, and the
+//    author's own 0x9FFF bound excludes Hangul (U+AC00-U+D7AF) anyway. Every
+//    UTF-8 byte of a non-ASCII codepoint has the high bit set, so this test is
+//    exact for the question being asked.
+//
 bool includeCJK(char *str)
 {
     while (*str) {
-        unsigned char c = *str;
-        // normal cjk range
-        if (c >= 0x80 && c <= 0x9FFF) {
+        if ((unsigned char)*str >= 0x80)
             return true;
-        }
         str++;
     }
     return false;

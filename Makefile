@@ -1,7 +1,7 @@
 ###########################################################
 
 TARGET=Onion
-VERSION=4.4.0-beta-20260117
+VERSION=4.5.0-beta-20260805
 RA_SUBVERSION=1.22.2
 
 ###########################################################
@@ -10,7 +10,12 @@ ifneq ($(VERSION_OVERRIDE),)
 VERSION = $(VERSION_OVERRIDE)
 endif
  
-RELEASE_NAME := $(TARGET)-v$(VERSION)
+# Which optimisation level this branch builds at, so the two packages are
+# telling apart by filename alone. O0 is the baseline with -O2 applied only to
+# the components that scale a frame; the -O2 branch sets this to O2.
+OPT_LABEL ?= O0
+
+RELEASE_NAME := $(TARGET)-v$(VERSION)-$(OPT_LABEL)
 
 ifdef OS
 	current_dir := $(shell cd)
@@ -137,6 +142,8 @@ core: $(CACHE)/.setup
 	@cd $(SRC_DIR)/pressMenu2Kill && BUILD_DIR=$(BIN_DIR) make
 	@cd $(SRC_DIR)/pngScale && BUILD_DIR=$(BIN_DIR) make
 	@cd $(SRC_DIR)/libgamename && BUILD_DIR=$(BIN_DIR) make
+	@cd $(SRC_DIR)/libfbpin && BUILD_DIR=$(BIN_DIR) make
+	@cd $(SRC_DIR)/libuiscale && BUILD_DIR=$(BIN_DIR) make
 	@cd $(SRC_DIR)/gameNameList && BUILD_DIR=$(BIN_DIR) make
 	@cd $(SRC_DIR)/sendUDP && BUILD_DIR=$(BIN_DIR) make
 	@cd $(SRC_DIR)/tree && BUILD_DIR=$(BIN_DIR) make
@@ -153,8 +160,13 @@ core: $(CACHE)/.setup
 	@cp $(BIN_DIR)/gameNameList $(INSTALLER_DIR)/bin/
 	@cp $(BIN_DIR)/playActivity $(INSTALLER_DIR)/bin/
 	@cp $(BIN_DIR)/7z $(INSTALLER_DIR)/bin/
+# Ships with the installer, not just inside onion.pak, so the installer UI that
+# runs before extraction can be pinned too. See enable_fb_pinning in install.sh.
+	@cp $(BIN_DIR)/libfbpin.so $(INSTALLER_DIR)/bin/
 # Overrider miyoo libraries
 	@cp $(BIN_DIR)/libgamename.so $(BUILD_DIR)/miyoo/lib/
+	@cp $(BIN_DIR)/libfbpin.so $(BUILD_DIR)/miyoo/lib/
+	@cp $(BIN_DIR)/libuiscale.so $(BUILD_DIR)/miyoo/lib/
 
 apps: $(CACHE)/.setup
 	@$(ECHO) $(PRINT_RECIPE)
@@ -190,6 +202,20 @@ external: $(CACHE)/.setup $(THIRD_PARTY_DIR)/RetroArch-patch/bin/retroarch_miyoo
 	@cp -a $(BUILD_DIR)/App/Search/. "$(PACKAGES_APP_DEST)/Search (Find your games)/App/Search"
 	@mv -f $(BUILD_DIR)/App/Filter/* "$(PACKAGES_APP_DEST)/List shortcuts (Filter+Refresh)/App/Filter"
 	@rmdir $(BUILD_DIR)/App/Filter
+# Third-party apps that ship as-is. No build step - they are shell and Python -
+# so they are copied straight from their submodule into the package tree rather
+# than vendored into static/packages, which keeps a single source of truth and
+# 62MB of logo artwork out of this repository.
+	@$(ECHO) $(COLOR_BLUE)"\n-- Add EasyLogoTweak"$(COLOR_NORMAL)
+	@mkdir -p "$(PACKAGES_APP_DEST)/Boot Logo (EasyLogoTweak)/App"
+	@cp -a $(THIRD_PARTY_DIR)/EasyLogoTweak/SD_CARD/App/EasyLogoTweak "$(PACKAGES_APP_DEST)/Boot Logo (EasyLogoTweak)/App/"
+	@$(ECHO) $(COLOR_BLUE)"\n-- Add CPU Overclock"$(COLOR_NORMAL)
+	@mkdir -p "$(PACKAGES_APP_DEST)/CPU Overclock (Set default speed)/App/CpuOverclock"
+	@cp -a $(THIRD_PARTY_DIR)/CpuOverclock/app.py \
+		$(THIRD_PARTY_DIR)/CpuOverclock/launch.sh \
+		$(THIRD_PARTY_DIR)/CpuOverclock/config.json \
+		$(THIRD_PARTY_DIR)/CpuOverclock/icon.png \
+		"$(PACKAGES_APP_DEST)/CPU Overclock (Set default speed)/App/CpuOverclock/"
 # Other
 	@$(ECHO) $(COLOR_BLUE)"\n-- Build Terminal"$(COLOR_NORMAL)
 	@cd $(THIRD_PARTY_DIR)/Terminal && make && cp ./st "$(BIN_DIR)"

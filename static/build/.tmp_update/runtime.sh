@@ -4,13 +4,34 @@ miyoodir=/mnt/SDCARD/miyoo
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
 
+# Hold the framebuffer in the session's mode (see pin_ui_resolution). SDL's
+# fbcon backend probes ~15 candidate modes on every video init and sets each
+# one in turn; on a 752x560 panel every one of those is a visible scaler
+# reconfiguration. This swallows them.
+#
+# Exported rather than added per launch site because the binaries that do it
+# are spawned from several places - keymon's system() calls reach
+# gameSwitcher --overlay and infoPanel, which no runtime.sh launch line covers.
+# Launches that set LD_PRELOAD explicitly (RetroArch, MainUI) override this,
+# which is intended.
+#
+# No-op on 640x480 panels - see src/libfbpin/fbpin.c.
+export LD_PRELOAD="$miyoodir/lib/libfbpin.so"
+
 logfile=$(basename "$0" .sh)
 . $sysdir/script/log.sh
 
 MODEL_MM=283
 MODEL_MMF=285
 MODEL_MMP=354
+
+# Physical panel resolution, detected at boot.
 screen_resolution="640x480"
+
+# The framebuffer mode the whole session runs in. Every mode change is a
+# visible GOP scaler reconfiguration on 752x560 panels, so this is set once,
+# before anything draws, and never changed again.
+ui_resolution="640x480"
 
 main() {
     # Set model ID based on hardware detection
@@ -35,6 +56,11 @@ main() {
     touch /tmp/is_booting
     check_installer
     clear_logs
+
+    # Establish the session's framebuffer mode before anything draws. Must come
+    # before init_system: the LCD init there is when boot-time garbling shows.
+    get_screen_resolution
+    pin_ui_resolution
 
     init_system
     update_time
@@ -234,9 +260,27 @@ launch_main_ui() {
 
     # MainUI launch
     cd $miyoodir/app
+    # MainUI is a closed-source binary hardcoded to 640x480, and its SDL
+    # fbcon backend would otherwise drag the framebuffer back to that mode on
+    # startup. libuiscale gives it the 640x480 surface it expects and upscales
+    # the result into the native framebuffer, so the mode never changes. It is
+    # a no-op when the framebuffer is already 640x480.
+    #
+    # libfbpin is here too, despite the note in the handoff plan that the two
+    # must never both apply to one process. That warning's reason was that
+    # MainUI legitimately needs a non-native mode - and libuiscale is exactly
+    # what removed that need: it rewrites MainUI's 640x480 request into a
+    # request for the pinned mode before it ever reaches the framebuffer, so
+    # libfbpin only ever sees conforming mode sets and passes them through.
+    #
+    # Without it, mode sets MainUI makes outside SDL_SetVideoMode - notably on
+    # the way out - are unabsorbed, and leave the framebuffer at 640x480 for
+    # whatever runs next. Measured: apps launched from the menu read the
+    # framebuffer as 640x480 and correctly size themselves to it, landing as a
+    # 640x480 image centred in a 752x560 panel.
     PATH="$miyoodir/app:$PATH" \
         LD_LIBRARY_PATH="$miyoodir/lib:/config/lib:/lib" \
-        LD_PRELOAD="$miyoodir/lib/libpadsp.so" \
+        LD_PRELOAD="$miyoodir/lib/libfbpin.so:$miyoodir/lib/libuiscale.so:$miyoodir/lib/libpadsp.so" \
         ./MainUI 2>&1 > /dev/null
 
     # Merge the last game launched into the recent list
@@ -301,13 +345,21 @@ change_resolution() {
         res_x=$(echo "$1" | cut -d 'x' -f 1)
         res_y=$(echo "$1" | cut -d 'x' -f 2)
     else
-        res_x=$(echo "$screen_resolution" | cut -d 'x' -f 1)
-        res_y=$(echo "$screen_resolution" | cut -d 'x' -f 2)
+        res_x=$(echo "$ui_resolution" | cut -d 'x' -f 1)
+        res_y=$(echo "$ui_resolution" | cut -d 'x' -f 2)
     fi
     log "Changing resolution to $res_x x $res_y"
 
+    if [ "${res_x}x${res_y}" = "$(cat /tmp/fb_target_res 2> /dev/null)" ]; then
+        # Already in this mode - do not reconfigure the scaler for nothing.
+        return
+    fi
+
     bootScreen clear
 
+    # Publish the new target before switching so libfbpin stops defending the
+    # old one and lets this fbset through.
+    echo -n "${res_x}x${res_y}" > /tmp/fb_target_res
     fbset -g "$res_x" "$res_y" "$res_x" "$((res_y * 2))" 32
     # inform batmon and keymon of resolution change
     killall -SIGUSR1 batmon
@@ -411,13 +463,20 @@ launch_game() {
             "$rompath" "$rompath" "$emupath"
             retval=$?
         else
-            # Change resolution if needed
+            # The framebuffer is already pinned to $ui_resolution, which is
+            # the panel's native mode wherever that is supported - so games run
+            # at full resolution without a mode change. change_resolution() is
+            # a no-op when the requested mode is the one already set; it is
+            # still called so anything that genuinely needs a different mode
+            # keeps working.
             if [ -f /tmp/new_res_available ] && [ -f "$full_resolution_path" ]; then
-                log "Found full_resolution file, changing resolution to 560p"
                 change_resolution
             fi
 
-            if [ $is_game -eq 1 ] && [ ! -f /tmp/new_res_available ]; then
+            # Previously skipped on 560p-capable devices because the loading
+            # screen was drawn either side of a mode switch. There is no switch
+            # any more, so it can be shown everywhere.
+            if [ $is_game -eq 1 ]; then
                 infoPanel --message "LOADING" --persistent --romscreen &
                 touch /tmp/dismiss_info_panel
                 sync
@@ -427,14 +486,32 @@ launch_game() {
             cd /mnt/SDCARD/RetroArch
             force_retroarch_cfg
 
+            # MainUI writes cmd_to_run.sh with a hardcoded
+            # LD_PRELOAD=.../libpadsp.so, and that assignment discards the
+            # libfbpin.so exported at the top of this script. Without it the
+            # app's SDL fbcon backend probes ~15 modes on video init and every
+            # probe is a real mode change. Measured on a Mini Flip around a
+            # Package Manager launch: 752x560 -> 640x480 -> 752x560 -> 640x480.
+            # That is the garbling on entering and leaving apps.
+            #
+            # Apps only. Games are deliberately left alone: libfbpin rewrites
+            # any mode set that disagrees with the target, so a core that
+            # genuinely needs a different mode would have its video init
+            # rejected outright. Pinning the game path is worth doing, but it
+            # needs testing against real cores first - change_resolution below
+            # already restores the session mode if a game changes it.
+            if [ $is_game -eq 0 ] && ! grep -q "libfbpin.so" $sysdir/cmd_to_run.sh; then
+                sed -i "s|LD_PRELOAD=|LD_PRELOAD=$miyoodir/lib/libfbpin.so:|" $sysdir/cmd_to_run.sh
+                log "app launch: restored libfbpin to LD_PRELOAD"
+            fi
+
             # make the cmd_to_run shell env aware of the new timezone
             TZ="$TZ_VALUE" $sysdir/cmd_to_run.sh
             retval=$?
 
-            if [ -f /tmp/new_res_available ]; then
-                # Restore resolution
-                change_resolution "640x480"
-            fi
+            # Restore the session mode in case the game changed it behind
+            # our back. No-op when it did not.
+            change_resolution "$ui_resolution"
 
             if [ $is_game -eq 1 ] && [ ! -f /tmp/.offOrder ] && [ -f /tmp/.displaySavingMessage ]; then
                 rm /tmp/.displaySavingMessage
@@ -652,7 +729,7 @@ launch_switcher() {
     log "\n:: Launch switcher"
     cd $sysdir
     start_audioserver
-    LD_PRELOAD="$miyoodir/lib/libpadsp.so" gameSwitcher
+    LD_PRELOAD="$miyoodir/lib/libfbpin.so:$miyoodir/lib/libpadsp.so" gameSwitcher
     rm $sysdir/.runGameSwitcher
     set_prev_state "switcher"
     sync
@@ -753,6 +830,90 @@ get_screen_resolution() {
     fi
 
     echo -n "$screen_resolution" > /tmp/screen_resolution
+
+    # The UI renders at the panel's own resolution. Onion's own binaries read
+    # their geometry from the framebuffer, so this is all it takes for them to
+    # lay out natively; MainUI is handled separately (see launch_main_ui).
+    #
+    # Once the framebuffer has been pinned, that decision stands for the rest of
+    # the session - this function runs a second time from init_system(), and if
+    # the early probe timed out and pinned 640x480 while this one succeeds, the
+    # two must not disagree. The pinned mode is what everything is actually
+    # rendering into.
+    pinned=$(cat /tmp/fb_target_res 2> /dev/null)
+    if [ -n "$pinned" ]; then
+        ui_resolution="$pinned"
+    else
+        ui_resolution="$screen_resolution"
+    fi
+}
+
+#
+#   Set the framebuffer to the session's mode and hold it there.
+#
+#   Everything Onion draws, and every game, runs in this one mode for the whole
+#   session. That is the point: on 752x560 panels the SigmaStar GOP scaler is
+#   visibly garbled for ~2s every time the mode changes, and the only reliable
+#   fix is to never change it.
+#
+#   No-op on 640x480 panels - the kernel already hands over that mode, so there
+#   is nothing to set and nothing to defend.
+#
+pin_ui_resolution() {
+    res_x=$(echo "$ui_resolution" | cut -d 'x' -f 1)
+    res_y=$(echo "$ui_resolution" | cut -d 'x' -f 2)
+
+    # libfbpin reads this and rewrites any mode set that disagrees with it.
+    echo -n "$ui_resolution" > /tmp/fb_target_res
+
+    # 640x480 panels never scale, so there is no GOP reconfiguration to hide
+    # and nothing to pin - the kernel already hands over that mode. Setting it
+    # anyway is actively harmful: `fbset -g 640 480 640 960 32` would drop
+    # yres_virtual from the 1440 (three buffers) a Mini/Mini+ ships with to 960
+    # (two), which is a real regression, and would blank the backlight, zero the
+    # framebuffer and stall 400ms at every boot for no reason.
+    #
+    # This is the same test libfbpin applies internally before it will rewrite
+    # anything, so the two agree on which devices are left alone.
+    if [ "$res_x" = "640" ] && [ "$res_y" = "480" ]; then
+        log "pin_ui_resolution: 640x480 panel, nothing to pin"
+        return
+    fi
+
+    current=$(cat /sys/class/graphics/fb0/virtual_size 2> /dev/null)
+    if [ "$current" = "${res_x},$((res_y * 2))" ]; then
+        log "pin_ui_resolution: already $ui_resolution"
+        return
+    fi
+
+    log "pin_ui_resolution: pinning framebuffer to $ui_resolution"
+
+    # The switch itself is a visible scaler reconfiguration, so hide it behind
+    # the backlight. The firmware has already exported the PWM by this point,
+    # even though Onion does not configure brightness until init_system().
+    _bl=/sys/class/pwm/pwmchip0/pwm0/duty_cycle
+    _bl_prev=""
+    if [ -w "$_bl" ]; then
+        _bl_prev=$(cat "$_bl" 2> /dev/null)
+        echo 0 > "$_bl" 2> /dev/null
+        # duty=0 can leave the panel faintly lit; disabling the PWM is how
+        # Onion itself blanks (bin/adv/advexec.sh).
+        echo 0 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
+
+    fbset -g "$res_x" "$res_y" "$res_x" "$((res_y * 2))" 32
+
+    # Zero the aperture so the region that becomes visible when the mode grows
+    # is black rather than stale content read at the new stride.
+    cat /dev/zero > /dev/fb0 2> /dev/null
+
+    # Let the scaler settle before the panel is lit again.
+    usleep 400000
+
+    if [ -n "$_bl_prev" ]; then
+        echo "$_bl_prev" > "$_bl" 2> /dev/null
+        echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
 }
 
 mute_theme_bgm() {

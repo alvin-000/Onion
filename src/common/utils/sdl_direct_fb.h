@@ -34,9 +34,8 @@ void init(int flags)
 {
     display_init(_render_direct_to_fb);
 
-    if (g_display.width != 640 || g_display.height != 480) {
-        theme_initScaling((double)g_display.width / 640.0, zoomSurface);
-    }
+    theme_initScaling((double)g_display.width / THEME_DESIGN_WIDTH,
+                      (double)g_display.height / THEME_DESIGN_HEIGHT, zoomSurface);
 
     if (_render_direct_to_fb) {
         screen = SDL_CreateRGBSurface(SDL_SWSURFACE, g_display.width, g_display.height, 32, 0, 0, 0, 0);
@@ -56,7 +55,7 @@ void init(int flags)
         }
     }
     else {
-        SDL_InitDefault();
+        SDL_InitDefault(zoomSurface);
     }
 }
 
@@ -165,6 +164,21 @@ SDLKey _translate_input(int key)
     }
 }
 
+//
+//    Raw-input twin of updateKeystate() in utils/keystate.h, and it carries the
+//    same hazard: keystate[] holds one value per key, so a press and its release
+//    read in the same drain both run and the key ends RELEASED - the caller
+//    never sees PRESSED and the tap is gone, not late.
+//
+//    The remedy is the same, but the mechanism differs. There is no peeking at
+//    an evdev fd: read() has already consumed the event by the time its type is
+//    known. So a release that would erase a press from this same call is held in
+//    a one-event pushback and replayed at the start of the next call. The
+//    release is deferred by one iteration rather than dropped.
+//
+static struct input_event _keystate_pending;
+static bool _keystate_has_pending = false;
+
 bool _updateKeystate(KeyState keystate[320], bool *quit_flag, bool enabled, SDLKey *changed_key)
 {
     if (!_render_direct_to_fb) {
@@ -172,16 +186,26 @@ bool _updateKeystate(KeyState keystate[320], bool *quit_flag, bool enabled, SDLK
     }
 
     bool retval = false;
+    bool pressed_here[320] = {false};
     struct input_event ev;
+    bool from_pending;
 
     if (_input_fd == -1) {
         return false;
     }
 
-    while (poll(_fds, 1, 0) > 0) {
-        if (read(_input_fd, &ev, sizeof(ev)) != sizeof(ev)) {
-            fprintf(stderr, "Failed to read input event\n");
-            return false;
+    while (_keystate_has_pending || poll(_fds, 1, 0) > 0) {
+        if (_keystate_has_pending) {
+            ev = _keystate_pending;
+            _keystate_has_pending = false;
+            from_pending = true;
+        }
+        else {
+            if (read(_input_fd, &ev, sizeof(ev)) != sizeof(ev)) {
+                fprintf(stderr, "Failed to read input event\n");
+                return false;
+            }
+            from_pending = false;
         }
 
         if (!enabled)
@@ -190,12 +214,23 @@ bool _updateKeystate(KeyState keystate[320], bool *quit_flag, bool enabled, SDLK
         if (ev.type == EV_KEY) {
             SDLKey key = _translate_input(ev.code);
 
+            // Hold it back rather than undo a press the caller has not yet had
+            // a chance to act on. A replayed event is never held again, so the
+            // release always lands on the following call.
+            if (!from_pending && ev.value == 0 && key < 320 && pressed_here[key]) {
+                _keystate_pending = ev;
+                _keystate_has_pending = true;
+                break;
+            }
+
             switch (ev.value) {
             case 1: // Key press
                 if (keystate[key] != RELEASED)
                     keystate[key] = REPEATING;
                 else
                     keystate[key] = PRESSED;
+                if (key < 320)
+                    pressed_here[key] = true;
                 if (changed_key != NULL)
                     *changed_key = key;
                 retval = true;

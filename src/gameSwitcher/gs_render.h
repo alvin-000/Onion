@@ -22,9 +22,9 @@ void renderCentered(SDL_Surface *image, int view_mode, SDL_Rect *overrideSrcRect
     SDL_Rect image_pos = {offSetX, offSetY};
 
     if (view_mode == VIEW_NORMAL) {
-        image_size.x = theme()->frame.border_left;
-        image_size.w -= theme()->frame.border_left + theme()->frame.border_right;
-        image_pos.x += theme()->frame.border_left;
+        image_size.x = theme_scaleX(theme()->frame.border_left);
+        image_size.w -= theme_scaleX(theme()->frame.border_left + theme()->frame.border_right);
+        image_pos.x += theme_scaleX(theme()->frame.border_left);
     }
 
     if (overrideSrcRect != NULL) {
@@ -70,16 +70,16 @@ void renderGameName(AppState *state)
     SDL_Color color_white = {255, 255, 255};
     SDL_Surface *arrow_left = resource_getSurface(LEFT_ARROW_WB);
     SDL_Surface *arrow_right = resource_getSurface(RIGHT_ARROW_WB);
-    int game_name_padding = arrow_left->w + 20;
+    int game_name_padding = arrow_left->w + theme_scaleX(20);
     state->game_name_max_width = g_display.width - 2 * game_name_padding;
 
     Game_s *game = &game_list[state->current_game];
-    SDL_Rect game_name_bg_size = theme_scaleRect((SDL_Rect){0, 0, 640, 60});
+    SDL_Rect game_name_bg_size = {0, 0, g_display.width, theme_scaleY(THEME_HEADER_HEIGHT)};
     SDL_Rect game_name_bg_pos = {0, 0};
 
     if (state->view_mode == VIEW_NORMAL) {
-        game_name_bg_size.x = game_name_bg_pos.x = theme()->frame.border_left;
-        game_name_bg_size.w -= theme()->frame.border_left + theme()->frame.border_right;
+        game_name_bg_size.x = game_name_bg_pos.x = theme_scaleX(theme()->frame.border_left);
+        game_name_bg_size.w -= theme_scaleX(theme()->frame.border_left + theme()->frame.border_right);
     }
 
     int name_pos = g_display.height - game_name_bg_size.h;
@@ -100,15 +100,16 @@ void renderGameName(AppState *state)
     SDL_BlitSurface(state->transparent_bg, &game_name_bg_size, screen, &game_name_bg_pos);
 
     if (state->current_game > 0) {
-        SDL_Rect arrow_left_rect = {(double)(theme()->frame.border_left + 10) * g_scale, 30.0 * g_scale - arrow_left->h / 2};
+        SDL_Rect arrow_left_rect = {theme_scaleX(theme()->frame.border_left + 10),
+                                    theme_scaleY(30) - arrow_left->h / 2};
         arrow_left_rect.y += game_name_bg_pos.y;
         SDL_BlitSurface(arrow_left, NULL, screen, &arrow_left_rect);
     }
 
     if (state->current_game < game_list_len - 1) {
         SDL_Rect arrow_right_rect = {
-            (double)(630 - theme()->frame.border_right) * g_scale - arrow_right->w,
-            30.0 * g_scale - arrow_right->h / 2};
+            g_display.width - theme_scaleX(10 + theme()->frame.border_right) - arrow_right->w,
+            theme_scaleY(30) - arrow_right->h / 2};
         arrow_right_rect.y += game_name_bg_pos.y;
         SDL_BlitSurface(arrow_right, NULL, screen, &arrow_right_rect);
     }
@@ -131,7 +132,7 @@ void renderGameName(AppState *state)
     }
 
     SDL_Rect game_name_rect = {(g_display.width - state->surfaceGameName->w) / 2,
-                               game_name_bg_pos.y + 30.0 * g_scale - state->surfaceGameName->h / 2};
+                               game_name_bg_pos.y + theme_scaleY(30) - state->surfaceGameName->h / 2};
     if (game_name_rect.x < game_name_padding)
         game_name_rect.x = game_name_padding;
 
@@ -229,7 +230,9 @@ void renderBrightness(AppState *state)
         // Display luminosity slider
         SDL_Surface *brightness = resource_getBrightness(settings.brightness);
         bool vertical = brightness->h > brightness->w;
-        SDL_Rect brightness_rect = {0, (double)(state->view_mode == VIEW_NORMAL ? 240 : 210) * g_scale - brightness->h / 2};
+        SDL_Rect brightness_rect = {0, g_display.height / 2 -
+                                       (state->view_mode == VIEW_NORMAL ? 0 : theme_scaleY(30)) -
+                                       brightness->h / 2};
         if (!vertical) {
             brightness_rect.x = (g_display.width - brightness->w) / 2;
             brightness_rect.y = state->view_mode == VIEW_NORMAL ? state->header_height : 0;

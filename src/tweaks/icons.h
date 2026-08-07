@@ -114,7 +114,7 @@ int _add_icon_packs(const char *path, List *list, void (*action)(void *),
             }
 
             if (is_dir(icon_pack_path)) {
-                strncpy(icon_pack_name, ep->d_name, STR_MAX - 1);
+                snprintf(icon_pack_name, sizeof(icon_pack_name), "%s", ep->d_name);
                 str_split(icon_pack_name, " by ");
 
                 ListItem item = {.action = action};
@@ -149,7 +149,7 @@ void _action_apply_icon_pack(void *_item)
     keys_enabled = false;
 
     SDL_Surface *background_cache =
-        SDL_CreateRGBSurface(SDL_HWSURFACE, 640, 480, 32, 0, 0, 0, 0);
+        SDL_CreateRGBSurface(SDL_HWSURFACE, g_display.width, g_display.height, 32, 0, 0, 0, 0);
     SDL_BlitSurface(screen, NULL, background_cache, NULL);
 
     theme_renderDialog(screen, item->label,

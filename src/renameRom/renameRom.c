@@ -94,7 +94,7 @@ int main(int argc, char *argv[])
         return 1;
 
     char romdir[STR_MAX];
-    strncpy(romdir, rompath, STR_MAX - 1);
+    snprintf(romdir, sizeof(romdir), "%s", rompath);
     dirname(romdir);
 
     const char *romext = file_getExtension(rompath);
@@ -105,7 +105,7 @@ int main(int argc, char *argv[])
     renameFile(romdir, romext, old_name, new_name);
 
     char emupath[STR_MAX];
-    strncpy(emupath, rompath, STR_MAX - 1);
+    snprintf(emupath, sizeof(emupath), "%s", rompath);
     str_split(emupath, "/../../");
 
     printf_debug("emupath: %s\n", emupath);

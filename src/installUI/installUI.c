@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "utils/sdl_legacy.h"
 #include "system/keymap_sw.h"
 #include "utils/config.h"
 #include "utils/file.h"
@@ -21,6 +22,17 @@
 #endif
 
 #define TIMEOUT_M 10
+// These live in /tmp, not in the installer's own directory.
+//
+// On a fresh install, run_installation() does `rm -rf App Emu RApp miyoo`,
+// which deletes $sysdir - this program's working directory - while it is
+// running. After that `touch $sysdir/.installed` has nowhere to write, and a
+// relative exists(FLAG_INSTALLED) resolves against a deleted directory, so the
+// exit condition below could never fire and the slideshow drew over the quick
+// guide until the reboot. /tmp is a tmpfs that survives it.
+#define FLAG_INSTALLED "/tmp/.onion_installed"
+#define FLAG_WAITCONFIRM "/tmp/.onion_waitConfirm"
+
 #define CHECK_TIMEOUT 300
 #define SLIDE_TIMEOUT 10000
 
@@ -89,9 +101,9 @@ int main(int argc, char *argv[])
     SDL_ShowCursor(SDL_DISABLE);
     TTF_Init();
 
-    SDL_Surface *video = SDL_SetVideoMode(640, 480, 32, SDL_HWSURFACE);
-    SDL_Surface *screen =
-        SDL_CreateRGBSurface(SDL_HWSURFACE, 640, 480, 32, 0, 0, 0, 0);
+    // Draw at 640x480 as always; legacy_present() upscales to the panel.
+    SDL_Surface *screen = NULL;
+    SDL_Surface *video = legacy_openDisplay(640, 480, SDL_HWSURFACE, &screen);
 
     SDL_Surface *waiting_bg = IMG_Load("res/waitingBG.png");
     SDL_Surface *progress_stripes = IMG_Load("res/progress_stripes.png");
@@ -152,7 +164,7 @@ int main(int argc, char *argv[])
                     slide_timer = ticks;
                     break;
                 case SW_BTN_A:
-                    if (exists(".waitConfirm"))
+                    if (exists(FLAG_WAITCONFIRM))
                         quit = true;
                     break;
                 default:
@@ -166,9 +178,9 @@ int main(int argc, char *argv[])
             slide_timer = ticks;
         }
 
-        if (exists(".installed") || exists(".waitConfirm")) {
+        if (exists(FLAG_INSTALLED) || exists(FLAG_WAITCONFIRM)) {
             progress = 100;
-            if (!exists(".waitConfirm"))
+            if (!exists(FLAG_WAITCONFIRM))
                 quit = true;
         }
 
@@ -183,12 +195,12 @@ int main(int argc, char *argv[])
             if (exists("/tmp/.update_msg")) {
                 file_readLastLine("/tmp/.update_msg", message_str);
                 long n = 0;
-                if (!exists(".installed") && str_getLastNumber(message_str, &n))
+                if (!exists(FLAG_INSTALLED) && str_getLastNumber(message_str, &n))
                     progress = (int)(start_at + n / progress_div);
                 check_timer = ticks; // reset timeout
             }
             else if (!quit && ticks - check_timer > TIMEOUT_M * 60 * 1000 &&
-                     !exists(".waitConfirm")) {
+                     !exists(FLAG_WAITCONFIRM)) {
                 sprintf(message_str, "The installation timed out, exiting...");
                 progress = 100;
                 failed = true;
@@ -229,8 +241,7 @@ int main(int argc, char *argv[])
             SDL_BlitSurface(message, NULL, screen, &rectMessage);
             SDL_FreeSurface(message);
 
-            SDL_BlitSurface(screen, NULL, video, NULL);
-            SDL_Flip(video);
+            legacy_present(screen, video);
 
             spinner_tick += 4;
             if (spinner_tick >= 16)
@@ -242,8 +253,8 @@ int main(int argc, char *argv[])
         msleep(15);
     }
 
-    if (exists(".installed") && exists(".waitConfirm")) {
-        remove(".waitConfirm");
+    if (exists(FLAG_INSTALLED) && exists(FLAG_WAITCONFIRM)) {
+        remove(FLAG_WAITCONFIRM);
         SDL_FillRect(video, NULL, 0);
         SDL_Flip(video);
     }

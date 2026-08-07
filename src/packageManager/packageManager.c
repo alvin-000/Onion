@@ -33,8 +33,7 @@ int main(int argc, char *argv[])
     if (!auto_update) {
         SDL_Surface *loadingScreen = IMG_Load("res/loading.png");
         SDL_BlitSurface(loadingScreen, NULL, screen, NULL);
-        SDL_BlitSurface(screen, NULL, video, NULL);
-        SDL_Flip(video);
+        legacy_present(screen, video);
         SDL_FreeSurface(loadingScreen);
     }
 

@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "utils/sdl_legacy.h"
 #include "utils/str.h"
 
 #define PACKAGE_DIR "/mnt/SDCARD/App/PackageManager/data/"
@@ -81,8 +82,8 @@ void initResources(void)
     SDL_EnableKeyRepeat(300, 50);
     TTF_Init();
 
-    video = SDL_SetVideoMode(640, 480, 32, SDL_HWSURFACE);
-    screen = SDL_CreateRGBSurface(SDL_HWSURFACE, 640, 480, 32, 0, 0, 0, 0);
+    // Draw at 640x480 as always; legacy_present() upscales to the panel.
+    video = legacy_openDisplay(640, 480, SDL_HWSURFACE, &screen);
 
     surfaceBackground = IMG_Load("res/bgApp.png");
     surfaceSelection = IMG_Load("res/selection.png");

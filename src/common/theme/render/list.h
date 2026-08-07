@@ -1,7 +1,10 @@
 #ifndef RENDER_MENU_H__
 #define RENDER_MENU_H__
 
+#include <SDL/SDL_rotozoom.h>
+
 #include "components/list.h"
+#include "system/display.h"
 #include "theme/background.h"
 #include "theme/config.h"
 #include "theme/resources.h"
@@ -17,7 +20,7 @@ void theme_renderListLabel(SDL_Surface *screen, const char *label, SDL_Color fg,
     SDL_Surface *item_label = TTF_RenderUTF8_Blended(list_font, label, fg);
     SDL_Rect item_label_rect = {offset_x, center_y - item_label->h / 2};
 
-    SDL_Rect label_crop = {0, 0, label_end - 30 * g_scale, item_label->h};
+    SDL_Rect label_crop = {0, 0, label_end - theme_scaleX(30), item_label->h};
 
     /* Maybe shadows will be an option in the future
     SDL_Rect item_shadow_rect = {item_label_rect.x + 1, item_label_rect.y + 2};
@@ -58,19 +61,24 @@ void theme_renderListCustom(SDL_Surface *screen, List *list, ListRenderParams_s 
 
     TTF_Font *list_font = resource_getFont(LIST);
 
-    SDL_Rect item_bg_rect = {0, 60.0 * g_scale},
-             item_div_size = {0, 0, params.dim.w, 4.0 * g_scale},
-             item_bg_size = {0, 0, params.dim.w, (list_small ? 56.0 : 90.0) * g_scale},
+    // Screen edges come from the panel, not from the design space: the two only
+    // agree on a 640x480 device. Design-space sizes still scale.
+    const int screen_right = g_display.width;
+    const int list_bottom = g_display.height - theme_scaleY(THEME_FOOTER_HEIGHT);
+
+    SDL_Rect item_bg_rect = {0, theme_scaleY(THEME_HEADER_HEIGHT)},
+             item_div_size = {0, 0, params.dim.w, theme_scaleY(4)},
+             item_bg_size = {0, 0, params.dim.w, theme_scaleY(list_small ? 56.0 : 90.0)},
              toggle_rect = {0, 0};
 
-    int list_height = params.stretch_y ? params.dim.h - 10.0 * g_scale : 420.0 * g_scale;
-    int item_padding = list_small && params.show_dividers ? 4.0 * g_scale : 0;
-    int item_height = params.stretch_y ? list_height / list->scroll_height : (list_small ? 60.0 : 90.0) * g_scale;
-    int label_y = (list_small ? 27.0 : 37.0) * g_scale;
+    int list_height = params.stretch_y ? params.dim.h - theme_scaleY(10) : list_bottom;
+    int item_padding = list_small && params.show_dividers ? theme_scaleY(4) : 0;
+    int item_height = params.stretch_y ? list_height / list->scroll_height : theme_scaleY(list_small ? 60.0 : 90.0);
+    int label_y = theme_scaleY(list_small ? 27.0 : 37.0);
     SDL_Surface *item_bg = resource_getSurface(list_small ? BG_LIST_S : BG_LIST_L);
 
-    int menu_pos_y = params.stretch_y ? params.pos.y + 4.0 * g_scale + (list_height - list->scroll_height * item_height) / 2
-                                      : 420.0 * g_scale - list->scroll_height * item_height;
+    int menu_pos_y = params.stretch_y ? params.pos.y + theme_scaleY(4) + (list_height - list->scroll_height * item_height) / 2
+                                      : list_bottom - list->scroll_height * item_height;
     int last_item = list->scroll_pos + list->scroll_height;
 
     if (last_item > list->item_count)
@@ -96,7 +104,7 @@ void theme_renderListCustom(SDL_Surface *screen, List *list, ListRenderParams_s 
         ListItem *active_item = &list->items[list->active_pos];
         if (params.show_dividers)
             SDL_BlitSurface(resource_getSurface(HORIZONTAL_DIVIDER), &item_div_size, screen, &item_bg_rect);
-        theme_renderListLabel(screen, active_item->sticky_note, theme()->list.color, 20 * g_scale, item_bg_rect.y + label_y, false, 640 * g_scale, true);
+        theme_renderListLabel(screen, active_item->sticky_note, theme()->list.color, theme_scaleX(20), item_bg_rect.y + label_y, false, screen_right, true);
     }
 
     for (int i = list->scroll_pos; i < last_item; i++) {
@@ -125,22 +133,22 @@ void theme_renderListCustom(SDL_Surface *screen, List *list, ListRenderParams_s 
         }
 
         const int item_center_y = item_bg_rect.y + item_bg_size.h / 2;
-        const int multivalue_width = 226 * g_scale;
-        int label_end = 640 * g_scale;
-        int offset_x = 20 * g_scale;
+        const int multivalue_width = theme_scaleX(226);
+        int label_end = screen_right;
+        int offset_x = theme_scaleX(20);
 
         if (item->icon_ptr != NULL) {
             SDL_Surface *icon = (SDL_Surface *)item->icon_ptr;
             if (icon->w > 1) {
                 SDL_Rect icon_rect = {offset_x, item_center_y - icon->h / 2};
                 SDL_BlitSurface(icon, NULL, screen, &icon_rect);
-                offset_x += icon->w + 17 * g_scale;
+                offset_x += icon->w + theme_scaleX(17);
             }
         }
 
         if (item->item_type == TOGGLE) {
             SDL_Surface *toggle = show_disabled ? (item->value == 1 ? g_hidden_items.toggle_on : g_hidden_items.toggle_off) : (resource_getSurface(item->value == 1 ? TOGGLE_ON : TOGGLE_OFF));
-            toggle_rect.x = 620 * g_scale - toggle->w;
+            toggle_rect.x = screen_right - theme_scaleX(20) - toggle->w;
             toggle_rect.y = item_center_y - toggle->h / 2;
             label_end = toggle_rect.x;
             SDL_BlitSurface(toggle, NULL, screen, &toggle_rect);
@@ -149,10 +157,10 @@ void theme_renderListCustom(SDL_Surface *screen, List *list, ListRenderParams_s 
             SDL_Surface *arrow_left = show_disabled ? g_hidden_items.arrow_left : resource_getSurface(LEFT_ARROW);
             SDL_Surface *arrow_right = show_disabled ? g_hidden_items.arrow_right : resource_getSurface(RIGHT_ARROW);
             SDL_Rect arrow_left_pos = {
-                640 * g_scale - 20 * g_scale - arrow_right->w - multivalue_width - arrow_left->w,
+                screen_right - theme_scaleX(20) - arrow_right->w - multivalue_width - arrow_left->w,
                 item_center_y - arrow_left->h / 2};
             SDL_Rect arrow_right_pos = {
-                640 * g_scale - 20 * g_scale - arrow_right->w,
+                screen_right - theme_scaleX(20) - arrow_right->w,
                 item_center_y - arrow_right->h / 2};
             SDL_BlitSurface(arrow_left, NULL, screen, &arrow_left_pos);
             SDL_BlitSurface(arrow_right, NULL, screen, &arrow_right_pos);
@@ -167,7 +175,7 @@ void theme_renderListCustom(SDL_Surface *screen, List *list, ListRenderParams_s 
             SDL_Rect value_size = {0, 0, multivalue_width, value_label->h};
             int label_width = value_label->w > value_size.w ? value_size.w : value_label->w;
             SDL_Rect value_pos = {
-                640 * g_scale - 20 * g_scale - arrow_right->w - multivalue_width / 2 - label_width / 2,
+                screen_right - theme_scaleX(20) - arrow_right->w - multivalue_width / 2 - label_width / 2,
                 item_center_y - value_size.h / 2};
             SDL_BlitSurface(value_label, &value_size, screen, &value_pos);
         }
@@ -179,17 +187,17 @@ void theme_renderListCustom(SDL_Surface *screen, List *list, ListRenderParams_s 
         if (!list_small && strlen(item->description)) {
             theme_renderListLabel(
                 screen, item->description, theme()->grid.color, offset_x,
-                item_bg_rect.y + 62 * g_scale, list->active_pos == i, label_end, show_disabled);
+                item_bg_rect.y + theme_scaleY(62), list->active_pos == i, label_end, show_disabled);
         }
     }
 
     if (active_preview != NULL) {
-        int preview_width = (double)params.preview_width * g_scale;
-        int preview_x = 640.0 * g_scale;
+        int preview_width = theme_scaleX(params.preview_width);
+        int preview_x = screen_right;
 
         if (params.preview_bg) {
             SDL_Surface *preview_bg = resource_getSurface(PREVIEW_BG);
-            SDL_Rect preview_bg_rect = {640 * g_scale - preview_bg->w, 60 * g_scale};
+            SDL_Rect preview_bg_rect = {screen_right - preview_bg->w, theme_scaleY(THEME_HEADER_HEIGHT)};
             SDL_BlitSurface(preview_bg, NULL, screen, &preview_bg_rect);
             preview_x -= preview_bg->w;
         }
@@ -208,7 +216,7 @@ void theme_renderListCustom(SDL_Surface *screen, List *list, ListRenderParams_s 
             }
 
             SDL_Rect preview_rect = {preview_x + (preview_width - preview->w) / 2,
-                                     240 * g_scale - preview->h / 2};
+                                     g_display.height / 2 - preview->h / 2};
             SDL_BlitSurface(preview, NULL, screen, &preview_rect);
 
             if (free_after)
@@ -221,8 +229,9 @@ void theme_renderList(SDL_Surface *screen, List *list)
 {
     ListRenderParams_s params = {
         .background = theme_background(),
-        .dim = {0, 60 * g_scale, 640 * g_scale, 360 * g_scale},
-        .pos = {0, 60 * g_scale},
+        .dim = {0, theme_scaleY(THEME_HEADER_HEIGHT), g_display.width,
+                g_display.height - theme_scaleY(THEME_HEADER_HEIGHT + THEME_FOOTER_HEIGHT)},
+        .pos = {0, theme_scaleY(THEME_HEADER_HEIGHT)},
         .show_dividers = true,
         .stretch_y = false,
         .preview_bg = true,

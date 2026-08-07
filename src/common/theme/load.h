@@ -18,23 +18,47 @@
 
 typedef SDL_Surface *(*ScaleSurfaceFunc)(SDL_Surface *surface, double xScale, double yScale, int smoothing);
 
-static ScaleSurfaceFunc scaleSurfaceFunc = NULL;
-static double g_scale = 1.0;
+// Themes are authored against this design space; everything else is derived
+// from it by scaling. Kept as named constants so the intent of the ratios
+// below is readable.
+#define THEME_DESIGN_WIDTH 640
+#define THEME_DESIGN_HEIGHT 480
 
-void theme_initScaling(double scale, ScaleSurfaceFunc scaleSurface)
+// The title bar and hint bar the skin assets are cut for.
+#define THEME_HEADER_HEIGHT 60
+#define THEME_FOOTER_HEIGHT 60
+
+static ScaleSurfaceFunc scaleSurfaceFunc = NULL;
+
+// Two factors, not one. 752x560 panels (Mini Flip / Mini v4) are 1.3428:1, not
+// the 4:3 the themes are drawn for, so a single factor cannot be right on both
+// axes: scaling by width alone makes 480-tall content 564px and pushes every
+// bottom-anchored element off the panel. g_scale stays the horizontal factor so
+// existing `x * g_scale` call sites keep their meaning.
+static double g_scale = 1.0;
+static double g_scale_y = 1.0;
+
+void theme_initScaling(double scale_x, double scale_y, ScaleSurfaceFunc scaleSurface)
 {
-    g_scale = scale;
+    g_scale = scale_x;
+    g_scale_y = scale_y;
     scaleSurfaceFunc = scaleSurface;
 }
 
+// Design-space value -> screen pixels. Use these for sizes and offsets that
+// belong to the theme's own geometry; use g_display.width/height directly for
+// anything that means "the edge of the screen".
+static inline int theme_scaleX(double value) { return (int)(value * g_scale); }
+static inline int theme_scaleY(double value) { return (int)(value * g_scale_y); }
+
 SDL_Rect theme_scaleRect(SDL_Rect rect)
 {
-    if (g_scale == 1.0)
+    if (g_scale == 1.0 && g_scale_y == 1.0)
         return rect;
     rect.x = (double)rect.x * g_scale;
-    rect.y = (double)rect.y * g_scale;
+    rect.y = (double)rect.y * g_scale_y;
     rect.w = (double)rect.w * g_scale;
-    rect.h = (double)rect.h * g_scale;
+    rect.h = (double)rect.h * g_scale_y;
     return rect;
 }
 
@@ -93,8 +117,8 @@ SDL_Surface *theme_loadImage(const char *theme_path, const char *name)
         image = converted;
     }
 
-    if (g_scale != 1.0 && scaleSurfaceFunc) {
-        SDL_Surface *scaled = scaleSurfaceFunc(image, g_scale, g_scale, 1);
+    if ((g_scale != 1.0 || g_scale_y != 1.0) && scaleSurfaceFunc) {
+        SDL_Surface *scaled = scaleSurfaceFunc(image, g_scale, g_scale_y, 1);
         SDL_FreeSurface(image);
         image = scaled;
     }
@@ -109,8 +133,10 @@ TTF_Font *theme_loadFont(const char *theme_path, const char *font, int size)
         strncpy(font_path, font, STR_MAX * 2 - 1);
     else
         snprintf(font_path, STR_MAX * 2, "%s%s", theme_path, font);
-    if (g_scale != 1.0)
-        size = (int)(size * g_scale);
+    // Point size is a height, so it follows the vertical factor - scaling it by
+    // width would make glyphs taller than the space reserved for them.
+    if (g_scale_y != 1.0)
+        size = (int)(size * g_scale_y);
     return TTF_OpenFont(exists(font_path) ? font_path : FALLBACK_FONT, size);
 }
 

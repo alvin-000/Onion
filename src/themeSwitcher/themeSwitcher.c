@@ -14,6 +14,7 @@
 #include "system/lang.h"
 #include "system/settings.h"
 #include "utils/msleep.h"
+#include "utils/sdl_legacy.h"
 
 #include "installTheme.h"
 
@@ -27,8 +28,7 @@ void showCenteredMessage(SDL_Surface *video, SDL_Surface *screen,
     SDL_Rect loadingRect = {320 - message->w / 2, 240 - message->h / 2};
     SDL_FillRect(screen, NULL, 0);
     SDL_BlitSurface(message, NULL, screen, &loadingRect);
-    SDL_BlitSurface(screen, NULL, video, NULL);
-    SDL_Flip(video);
+    legacy_present(screen, video);
     SDL_FreeSurface(message);
 }
 
@@ -138,9 +138,9 @@ int main(int argc, char *argv[])
     SDL_EnableKeyRepeat(300, 50);
     TTF_Init();
 
-    SDL_Surface *video = SDL_SetVideoMode(640, 480, 32, SDL_HWSURFACE);
-    SDL_Surface *screen =
-        SDL_CreateRGBSurface(SDL_HWSURFACE, 640, 480, 32, 0, 0, 0, 0);
+    // Draw at 640x480 as always; legacy_present() upscales to the panel.
+    SDL_Surface *screen = NULL;
+    SDL_Surface *video = legacy_openDisplay(640, 480, SDL_HWSURFACE, &screen);
 
     TTF_Font *font40 = TTF_OpenFont("/customer/app/Exo-2-Bold-Italic.ttf", 40);
     TTF_Font *font21 = TTF_OpenFont("/customer/app/Exo-2-Bold-Italic.ttf", 21);
@@ -203,6 +203,16 @@ int main(int argc, char *argv[])
     SDL_Surface *previews[themes_count];
     SDL_Surface *noPreview = IMG_Load("res/noThemePreview.png");
 
+    // The progress counter is redrawn at most every 200ms, not once per theme.
+    //
+    // Each showCenteredMessage() is a full present, and on a 752x560 panel a
+    // present is a complete scale and rotate of the frame - so redrawing per
+    // theme meant one full-screen rescale per theme just to change a number,
+    // and with twenty-odd themes that dominated startup. On a 640x480 device
+    // legacy_present() is a plain blit, which is why this only showed up on
+    // the Flip.
+    uint32_t last_msg = 0;
+
     for (int i = 0; i < themes_count; i++) {
         snprintf(preview_path, STR_MAX * 2 - 1, THEMES_DIR "/%s/preview.png", themes[i]);
 
@@ -211,9 +221,13 @@ int main(int argc, char *argv[])
 
         previews[i] = is_file(preview_path) ? IMG_Load(preview_path) : NULL;
 
-        char loading_msg[STR_MAX];
-        snprintf(loading_msg, STR_MAX - 1, "Loading previews... %d/%d", i + 1, themes_count);
-        showCenteredMessage(video, screen, loading_msg, font30, color_white);
+        uint32_t now = SDL_GetTicks();
+        if (i == themes_count - 1 || now - last_msg >= 200) {
+            char loading_msg[STR_MAX];
+            snprintf(loading_msg, STR_MAX - 1, "Loading previews... %d/%d", i + 1, themes_count);
+            showCenteredMessage(video, screen, loading_msg, font30, color_white);
+            last_msg = now;
+        }
     }
 
     char cPages[25];
@@ -398,8 +412,7 @@ int main(int argc, char *argv[])
             SDL_BlitSurface(surfaceBottomBar, NULL, screen, &rectBottomBar);
         }
 
-        SDL_BlitSurface(screen, NULL, video, NULL);
-        SDL_Flip(video);
+        legacy_present(screen, video);
 
         changed = false;
         render_dirty = false;

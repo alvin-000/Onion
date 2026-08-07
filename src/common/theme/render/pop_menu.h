@@ -15,7 +15,7 @@ void theme_renderPopMenu(SDL_Surface *screen, int y_pos, List *list, SDL_Surface
     int size = list->scroll_height < 4 ? list->scroll_height : 4;
     SDL_Surface *bg = resource_getPopMenuBg(size);
 
-    if (bg && bg->h > (g_display.height - y_pos - 60.0 * g_scale)) {
+    if (bg && bg->h > (g_display.height - y_pos - theme_scaleY(THEME_FOOTER_HEIGHT))) {
         y_pos = 0;
     }
 
@@ -34,7 +34,7 @@ void theme_renderPopMenu(SDL_Surface *screen, int y_pos, List *list, SDL_Surface
 
     ListRenderParams_s params = {
         .background = NULL,
-        .dim = {0, 0, 320.0 * g_scale, (double)size * 60.0 * g_scale},
+        .dim = {0, 0, theme_scaleX(320), size * theme_scaleY(60)},
         .pos = {0, y_pos},
         .show_dividers = false,
         .stretch_y = true,

@@ -13,13 +13,17 @@ void theme_renderBootScreen(SDL_Surface *screen, ThemeImages background, const c
         SDL_BlitSurface(bg, NULL, screen, NULL);
     }
 
-    TTF_Font *font = theme_loadFont(theme()->path, theme()->hint.font, 18 * g_scale);
+    TTF_Font *font = theme_loadFont(theme()->path, theme()->hint.font, 18);
     SDL_Color color = theme()->total.color;
+
+    // Same baseline the hint bar uses (design-space y=450).
+    const int hint_center_y =
+        g_display.height - theme_scaleY(THEME_FOOTER_HEIGHT) + theme_scaleY(30);
 
     if (strlen(version_str) > 0) {
         SDL_Surface *version = TTF_RenderUTF8_Blended(font, version_str, color);
         if (version) {
-            SDL_Rect rect = {20.0 * g_scale, (450 * g_scale - version->h / 2)};
+            SDL_Rect rect = {theme_scaleX(20), hint_center_y - version->h / 2};
             SDL_BlitSurface(version, NULL, screen, &rect);
             SDL_FreeSurface(version);
         }
@@ -28,7 +32,8 @@ void theme_renderBootScreen(SDL_Surface *screen, ThemeImages background, const c
     if (strlen(message_str) > 0) {
         SDL_Surface *message = TTF_RenderUTF8_Blended(font, message_str, color);
         if (message) {
-            SDL_Rect rect = {620 * g_scale - message->w, 450 * g_scale - message->h / 2};
+            SDL_Rect rect = {g_display.width - theme_scaleX(20) - message->w,
+                             hint_center_y - message->h / 2};
             SDL_BlitSurface(message, NULL, screen, &rect);
             SDL_FreeSurface(message);
         }
