@@ -66,7 +66,19 @@ OFILES = $(LOCAL_CFILES:.c=.o) $(CPPFILES:.cpp=.o) \
 	$(foreach f,$(ALL_EXT_CFILES),$(call ext_obj,$(f)))
 endif
 
-CFLAGS := -I../../include -I../common -DPLATFORM_$(shell echo $(PLATFORM) | tr a-z A-Z) -DONION_VERSION="\"$(VERSION)\"" -Wall
+# Optimisation level. Without this the whole project builds at -O0: no
+# inlining, no register allocation, every variable spilled to the stack. On the
+# one component where it was measured, -O2 was worth 4x (libuiscale's scaler,
+# 191ms -> 45ms per frame) - more than every algorithmic change around it
+# combined.
+#
+# It also turns on analyses that only run when optimising. Applying it to a
+# handful of files already found an uninitialised read in libfbpin and a real
+# buffer overflow in batteryMonitorUI, both of which -O0 had hidden for years.
+# Treat new warnings from this as a backlog to work through, not noise.
+OPT_LEVEL ?= -O2
+
+CFLAGS := -I../../include -I../common -DPLATFORM_$(shell echo $(PLATFORM) | tr a-z A-Z) -DONION_VERSION="\"$(VERSION)\"" -Wall $(OPT_LEVEL)
 
 ifeq ($(DEBUG),1)
 CFLAGS := $(CFLAGS) -DLOG_DEBUG -g3

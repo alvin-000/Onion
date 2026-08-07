@@ -13,7 +13,7 @@ endif
 # Which optimisation level this branch builds at, so the two packages are
 # telling apart by filename alone. O0 is the baseline with -O2 applied only to
 # the components that scale a frame; the -O2 branch sets this to O2.
-OPT_LABEL ?= O0
+OPT_LABEL ?= O2
 
 RELEASE_NAME := $(TARGET)-v$(VERSION)-$(OPT_LABEL)
 
