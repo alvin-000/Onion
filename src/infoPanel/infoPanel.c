@@ -35,7 +35,7 @@ static bool loadImagesPathsFromJson(const char *config_path,
     char *json_str = NULL;
 
     char temp_path[STR_MAX];
-    strncpy(temp_path, config_path, STR_MAX - 1);
+    snprintf(temp_path, sizeof(temp_path), "%s", config_path);
     dirname(temp_path);
 
     if (!(json_str = file_read(config_path))) {
@@ -158,8 +158,9 @@ int main(int argc, char *argv[])
     bool cache_used = false;
 
     const SDL_Rect themedFrame = {
-        theme()->frame.border_left, 60,
-        640 - theme()->frame.border_left - theme()->frame.border_right, 360};
+        theme_scaleX(theme()->frame.border_left), theme_scaleY(THEME_HEADER_HEIGHT),
+        g_display.width - theme_scaleX(theme()->frame.border_left + theme()->frame.border_right),
+        g_display.height - theme_scaleY(THEME_HEADER_HEIGHT + THEME_FOOTER_HEIGHT)};
 
     SDL_Surface *static_image = NULL;
 

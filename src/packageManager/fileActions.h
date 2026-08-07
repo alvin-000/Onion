@@ -264,11 +264,18 @@ void loadPackages(bool auto_update)
     }
 }
 
-bool getPackageMainPath(char *out_path, const char *data_path,
+//
+//    `out_path` is a char[STR_MAX] at its one call site - 256 bytes - and both
+//    writes below concatenate parts that are not bounded to fit it. `data_path`
+//    is a full path, and `package_name` and `dp->d_name` are directory names of
+//    up to 255 characters each, so either sprintf could run past the end. Takes
+//    the size and bounds both.
+//
+bool getPackageMainPath(char *out_path, size_t out_size, const char *data_path,
                         const char *package_name)
 {
     const char *base_dir = basename((char *)data_path);
-    sprintf(out_path, "%s/%s/%s/", data_path, package_name, base_dir);
+    snprintf(out_path, out_size, "%s/%s/%s/", data_path, package_name, base_dir);
 
     if (!is_dir(out_path))
         return false;
@@ -285,7 +292,7 @@ bool getPackageMainPath(char *out_path, const char *data_path,
             continue;
         if (dp->d_type != DT_DIR)
             continue;
-        sprintf(out_path, "/mnt/SDCARD/%s/%s", base_dir, dp->d_name);
+        snprintf(out_path, out_size, "/mnt/SDCARD/%s/%s", base_dir, dp->d_name);
         closedir(dir);
         return is_dir(out_path);
     }
@@ -299,7 +306,7 @@ void callPackageInstaller(const char *data_path, const char *package_name,
 {
     char main_path[STR_MAX], cmd[STR_MAX];
 
-    if (getPackageMainPath(main_path, data_path, package_name)) {
+    if (getPackageMainPath(main_path, sizeof(main_path), data_path, package_name)) {
         char config_path[STR_MAX + 32];
         snprintf(config_path, STR_MAX + 32 - 1, "%s/config.json", main_path);
 

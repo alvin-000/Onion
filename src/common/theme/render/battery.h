@@ -52,7 +52,7 @@ SDL_Surface *theme_batterySurfaceWithBg(int percentage, SDL_Surface *background)
 
     SDL_SetAlpha(text, 0, SDL_ALPHA_TRANSPARENT); /* important */
 
-    if (icon->w > 640)
+    if (icon->w > theme_scaleX(THEME_DESIGN_WIDTH))
         visible = false;
 
     const int SPACER = 5;
@@ -130,8 +130,10 @@ SDL_Surface *theme_batterySurfaceWithBg(int percentage, SDL_Surface *background)
         SDL_SetAlpha(bg_title, SDL_SRCALPHA, SDL_ALPHA_TRANSPARENT);
         SDL_BlitSurface(bg_title, NULL, bg, NULL);
 
-        SDL_Rect bg_crop = {572, 6, 48, 48};
-        SDL_Rect bg_pos = {(img_width - 48) / 2, (img_height - 48) / 2};
+        // Crops a 48x48 patch out of bg-title, which theme_loadImage has
+        // already scaled - so the crop has to be scaled with it.
+        SDL_Rect bg_crop = theme_scaleRect((SDL_Rect){572, 6, 48, 48});
+        SDL_Rect bg_pos = {(img_width - bg_crop.w) / 2, (img_height - bg_crop.h) / 2};
 
         rect_icon.x += bg_crop.x - bg_pos.x;
         rect_icon.y += bg_crop.y - bg_pos.y;

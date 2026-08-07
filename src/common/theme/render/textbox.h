@@ -142,7 +142,7 @@ SDL_Surface *theme_textboxSurface(const char *message, TTF_Font *font,
 SDL_Surface *theme_createTextOverlay(const char *text, SDL_Color fg, SDL_Color bg, double bgAlpha, int padding)
 {
     TTF_Init();
-    TTF_Font *font = theme_loadFont(theme()->path, theme()->list.font, (int)(18.0 * g_scale));
+    TTF_Font *font = theme_loadFont(theme()->path, theme()->list.font, 18);
     TTF_SetFontStyle(font, TTF_STYLE_BOLD);
 
     SDL_Surface *text_surface = TTF_RenderUTF8_Blended(font, text, fg);

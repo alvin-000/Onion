@@ -1,6 +1,6 @@
 [submodule "third-party/SearchFilter"]
 	path = third-party/SearchFilter
-	url = https://github.com/OnionUI/SearchFilter.git
+	url = https://github.com/alvin-000/SearchFilter.git
 [submodule "third-party/Terminal"]
 	path = third-party/Terminal
 	url = https://github.com/OnionUI/app-Terminal.git
@@ -10,3 +10,9 @@
 [submodule "third-party/RetroArch-patch"]
 	path = third-party/RetroArch-patch
 	url = https://github.com/OnionUI/RetroArch-patch
+[submodule "third-party/EasyLogoTweak"]
+	path = third-party/EasyLogoTweak
+	url = https://github.com/alvin-000/Miyoo-Mini-easy-logotweak.git
+[submodule "third-party/CpuOverclock"]
+	path = third-party/CpuOverclock
+	url = https://github.com/alvin-000/Cpu_Overclock_Onion_OS.git

@@ -55,6 +55,12 @@ main() {
     echo 80 > $pwmdir/pwm0/duty_cycle
     echo 1 > $pwmdir/pwm0/enable
 
+    # Before anything draws. Every installer UI below inherits this mode, and
+    # libfbpin keeps each one's mode probing from moving it back.
+    pin_installer_resolution
+    enable_fb_pinning
+    fbpin_mark "installer start - pinned, libfbpin preloaded"
+
     killall keymon
 
     check_firmware
@@ -119,7 +125,7 @@ cleanup() {
     cd $sysdir
     rm -f \
         /tmp/.update_msg \
-        .installed \
+        /tmp/.onion_installed \
         install.sh
 
     # Remove dirs if empty
@@ -222,6 +228,138 @@ verify_file() {
     echo ""
 }
 
+#
+#   Pin the framebuffer to the panel's native mode for the whole installation.
+#
+#   Same property runtime.sh maintains for a normal session, and for the same
+#   reason: on a 752x560 panel every framebuffer mode change is a visible ~2s
+#   GOP scaler reconfiguration. The installer runs a series of SDL programs -
+#   prompt, detectKey, installUI, infoPanel (the quick guide), themeSwitcher,
+#   packageManager - and each one's fbcon backend probes ~15 modes on video
+#   init. Unpinned, every one of those probes is a real mode change, which is
+#   the garbling seen as setup hands over to the tutorial.
+#
+#   The firmware gate matches get_screen_resolution() in runtime.sh exactly. If
+#   the two disagreed, the installer would pin a mode the session then changes
+#   away from, which is the one thing this whole design exists to avoid.
+#
+#   No-op on 640x480 panels: they never scale, so there is nothing to protect.
+#   Fails open - if the panel cannot be identified, nothing is touched.
+#
+pin_installer_resolution() {
+    screen_resolution=$(grep 'Current TimingWidth=' /proc/mi_modules/fb/mi_fb0 2> /dev/null | sed 's/Current TimingWidth=\([0-9]*\),TimingWidth=\([0-9]*\),.*/\1x\2/')
+
+    if [ "$screen_resolution" != "752x560" ]; then
+        return
+    fi
+
+    if [ "$(/etc/fw_printenv miyoo_version 2> /dev/null | cut -d'=' -f2)" -ge "202310271401" ] 2> /dev/null; then
+        :
+    else
+        return
+    fi
+
+    res_x=752
+    res_y=560
+
+    # libfbpin reads this once it exists on disk. Published before the switch so
+    # a deliberate change is never mistaken for one to defend against.
+    echo -n "${res_x}x${res_y}" > /tmp/fb_target_res
+
+    if [ "$(cat /sys/class/graphics/fb0/virtual_size 2> /dev/null)" = "${res_x},$((res_y * 2))" ]; then
+        echo ":: Framebuffer already pinned to ${res_x}x${res_y}"
+        return
+    fi
+
+    echo ":: Pinning framebuffer to ${res_x}x${res_y}"
+
+    # The switch itself is a visible scaler reconfiguration, so hide it behind
+    # the backlight, exactly as pin_ui_resolution() does.
+    _bl=/sys/class/pwm/pwmchip0/pwm0/duty_cycle
+    _bl_prev=""
+    if [ -w "$_bl" ]; then
+        _bl_prev=$(cat "$_bl" 2> /dev/null)
+        echo 0 > "$_bl" 2> /dev/null
+        echo 0 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
+
+    fbset -g "$res_x" "$res_y" "$res_x" "$((res_y * 2))" 32
+
+    # Zero the aperture so the region that becomes visible when the mode grows
+    # is black rather than stale content read at the new stride.
+    cat /dev/zero > /dev/fb0 2> /dev/null
+
+    # Let the scaler settle before the panel is lit again.
+    usleep 400000
+
+    if [ -n "$_bl_prev" ]; then
+        echo "$_bl_prev" > "$_bl" 2> /dev/null
+        echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
+}
+
+#
+#   Hand the installer UI to libfbpin.
+#
+#   Pinning alone stops the mode from being wrong; libfbpin is what stops each
+#   program's mode probing from changing it in the first place.
+#
+#   The library is staged in /tmp rather than used where it lies, because both
+#   of the places it lives on disk are destroyed partway through an install:
+#   run_installation() does `rm -rf App Emu RApp miyoo`, which takes out
+#   $miyoodir/lib and $sysdir itself - $sysdir being /mnt/SDCARD/miyoo/app/.tmp_update.
+#   A process already running keeps its mapping, but every process started after
+#   that point would be preloading a path that no longer exists. /tmp is tmpfs
+#   and survives.
+#
+#   Called twice: once before the first UI draws, and again after install_core()
+#   in case the installer payload did not carry the library (an older installer
+#   updating in place), where the extracted copy is the only one available.
+#   Idempotent - re-running it with pinning already active changes nothing.
+#
+#
+#   Phase markers for /tmp/fbpin.log, so a mode set can be attributed to a
+#   point in the install rather than just to a process name. Both installUI
+#   runs log as comm=installUI; only the marker distinguishes the one before
+#   extraction from the one after.
+#
+#   Inert unless /mnt/SDCARD/.fbpin_debug exists.
+#
+fbpin_mark() {
+    [ -f /mnt/SDCARD/.fbpin_debug ] || return
+    echo "=== $* ===" >> /tmp/fbpin.log
+}
+
+#
+#   The install ends in a reboot and /tmp is tmpfs, so the log has to be moved
+#   somewhere that survives or it is never seen.
+#
+fbpin_save() {
+    [ -f /mnt/SDCARD/.fbpin_debug ] || return
+    [ -f /tmp/fbpin.log ] || return
+    cp -f /tmp/fbpin.log /mnt/SDCARD/fbpin_install.log 2> /dev/null
+    sync
+}
+
+enable_fb_pinning() {
+    [ -f /tmp/fb_target_res ] || return
+
+    if [ ! -f /tmp/libfbpin.so ]; then
+        for _src in "$sysdir/bin/libfbpin.so" "$miyoodir/lib/libfbpin.so"; do
+            if [ -f "$_src" ]; then
+                cp -f "$_src" /tmp/libfbpin.so 2> /dev/null && break
+            fi
+        done
+    fi
+
+    if [ -f /tmp/libfbpin.so ]; then
+        if [ "$LD_PRELOAD" != "/tmp/libfbpin.so" ]; then
+            export LD_PRELOAD="/tmp/libfbpin.so"
+            echo ":: Framebuffer pinning active for installer UI"
+        fi
+    fi
+}
+
 run_installation() {
     reset_configs=$1
     system_only=$2
@@ -235,6 +373,7 @@ run_installation() {
 
     # Show installation progress
     cd $sysdir
+    fbpin_mark "first installUI - BEFORE extraction (the screen in question)"
     installUI &
     sync
     sleep 1
@@ -281,6 +420,13 @@ run_installation() {
         rm -f $RA_PACKAGE_VERSION_FILE
     fi
 
+    fbpin_mark "post-extraction - pinning used to start here"
+
+    # Normally a no-op: pinning has been active since before the first screen.
+    # This is the fallback for an installer whose payload carried no libfbpin.so,
+    # where the copy just extracted from onion.pak is the first one available.
+    enable_fb_pinning
+
     if [ $reset_configs -eq 0 ]; then
         restore_ra_config
     fi
@@ -325,11 +471,20 @@ run_installation() {
             themeSwitcher --update --reapply_icons
         fi
 
-        touch $sysdir/.installed
+        touch /tmp/.onion_installed
         sync
 
         # Show quick guide
         if [ $reset_configs -eq 1 ]; then
+            # installUI now exits on its own: the flags moved to /tmp, which
+            # survives the "Remove stock folders" step above deleting
+            # /mnt/SDCARD/miyoo - and with it $sysdir, installUI's own working
+            # directory, which is why a relative .installed could never be seen.
+            # This stays because exiting takes until its next loop iteration,
+            # and the guide should not have to race it.
+            killall installUI 2> /dev/null
+            sleep 1
+
             cd /mnt/SDCARD/App/Onion_Manual/
             ./launch.sh
         fi
@@ -347,7 +502,7 @@ run_installation() {
         # ./config/boot_mod.sh # disabled because of possible incompatibility with new firmware
 
         # Show installation complete
-        rm -f .installed
+        rm -f /tmp/.onion_installed
     fi
 
     #########################################################################################
@@ -357,8 +512,8 @@ run_installation() {
 
     if [ $DEVICE_ID -eq MODEL_MM ]; then
         echo "$verb2 complete!" >> /tmp/.update_msg
-        touch $sysdir/.waitConfirm
-        touch $sysdir/.installed
+        touch /tmp/.onion_waitConfirm
+        touch /tmp/.onion_installed
         sync
     else
         echo "$verb2 complete - Rebooting..." >> /tmp/.update_msg
@@ -370,7 +525,7 @@ run_installation() {
     if [ $DEVICE_ID -eq MODEL_MM ]; then
         counter=10
 
-        while [ -f $sysdir/.waitConfirm ] && [ $counter -ge 0 ]; do
+        while [ -f /tmp/.onion_waitConfirm ] && [ $counter -ge 0 ]; do
             echo "Press A to turn off (""$counter""s)" >> /tmp/.update_msg
             counter=$((counter - 1))
             sleep 1
@@ -379,7 +534,7 @@ run_installation() {
         killall installUI
         bootScreen "End"
     else
-        touch $sysdir/.installed
+        touch /tmp/.onion_installed
     fi
 
     rm -f $sysdir/config/currentSlide 2> /dev/null
@@ -711,6 +866,7 @@ unzip_progress() {
     if [ "$extraction_status" -ne 0 ]; then
         touch $sysdir/.installFailed
         echo ":: Installation failed!"
+        fbpin_save
         sync
         reboot
         sleep 10
@@ -728,6 +884,7 @@ free_mma() {
 }
 
 main
+fbpin_save
 sync
 reboot
 sleep 10

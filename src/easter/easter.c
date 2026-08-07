@@ -1,6 +1,7 @@
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
 #include <SDL/SDL_ttf.h>
+#include <SDL/SDL_rotozoom.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +77,7 @@ int main(int argc, char *argv[])
 {
     printf("%s", "\n --------EASTER LAUNCH---------------- \n");
     // Initialize SDL
-    SDL_InitDefault();
+    SDL_InitDefault(zoomSurface);
 
     // Load the icons
     SDL_Surface *logo1 = IMG_Load("/mnt/SDCARD/.tmp_update/res/easter1.png");
@@ -140,8 +141,8 @@ int main(int argc, char *argv[])
             int animationStep = 1;
             // Scrolling text
             // Text dimensions
-            const int TEXT_WIDTH = 640;
-            const int TEXT_HEIGHT = 480;
+            const int TEXT_WIDTH = g_display.width;
+            const int TEXT_HEIGHT = g_display.height;
 
             // Scroll speed
             const int SCROLL_SPEED = 1;
@@ -156,7 +157,7 @@ int main(int argc, char *argv[])
             char gText[MAXCHARACTERSARRAY];
             int charIndex = 0;
             // Scroll position
-            int scrollY = 560;
+            int scrollY = g_display.height + 80;
 
             // Initialize SDL_ttf
             TTF_Init();
@@ -203,10 +204,14 @@ int main(int argc, char *argv[])
 
             // DVD touching corner + text sliding Animation
             int cptFrames = 0;
-            int moduloFrame;
+            int moduloFrame = 0;
             SDL_PixelFormat *fmt = screen->format;
             while (loop) {
-                moduloFrame = cptFrames % moduloFrame;
+                // Cycles the three glitch logos below. This read its own
+                // uninitialised value as the divisor, so the first iteration
+                // was a modulo by whatever the stack held - a crash outright if
+                // that happened to be zero.
+                moduloFrame = cptFrames % 3;
 
                 switch (animationStep) {
                 case 1:

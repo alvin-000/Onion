@@ -1,3 +1,4 @@
+#include "utils/sdl_legacy.h"
 #include "./playActivityUI.h"
 
 static bool quit = false;
@@ -43,8 +44,8 @@ void init(void)
     SDL_EnableKeyRepeat(300, 50);
     TTF_Init();
 
-    video = SDL_SetVideoMode(640, 480, 32, SDL_HWSURFACE);
-    screen = SDL_CreateRGBSurface(SDL_HWSURFACE, 640, 480, 32, 0, 0, 0, 0);
+    // Draw at 640x480 as always; legacy_present() upscales to the panel.
+    video = legacy_openDisplay(640, 480, SDL_HWSURFACE, &screen);
 
     background = IMG_Load("./res/background.png");
 
@@ -194,8 +195,7 @@ int main(int argc, char *argv[])
     str_serializeTime(play_time_total_formatted, play_time_total);
     renderText(play_time_total_formatted, font30, color_white, &rectMileage);
 
-    SDL_BlitSurface(screen, NULL, video, NULL);
-    SDL_Flip(video);
+    legacy_present(screen, video);
 
     bool changed;
     KeyState keystate[320] = {(KeyState)0};
@@ -236,8 +236,7 @@ int main(int argc, char *argv[])
 
         renderPage(current_page);
 
-        SDL_BlitSurface(screen, NULL, video, NULL);
-        SDL_Flip(video);
+        legacy_present(screen, video);
     }
 
     free_resources();

@@ -53,5 +53,9 @@ sync
 echo $sv >/proc/sys/vm/swappiness
 
 if [ "$USE_752x560_RES" == "1" ]; then
-    fbset -g 640 480 640 960 32
+    # Onion pins the framebuffer to the panel's native mode for the whole
+    # session; forcing 640x480 back here would fight that and cost a visible
+    # GOP scaler reconfiguration. Hand the decision back to Onion, which
+    # restores the session mode and does nothing if it is already set.
+    /mnt/SDCARD/.tmp_update/script/change_resolution.sh
 fi

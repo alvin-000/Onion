@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 
 #include "system.h"
@@ -22,7 +23,14 @@
 #define display_on() display_setScreen(true)
 #define display_off() display_setScreen(false)
 
-static int fb_fd;
+// Must start negative. Three call sites below open the framebuffer lazily with
+// `if (fb_fd < 0)`, and a zero-initialised fd makes every one of those guards
+// fail: the open never happens and the ioctls run against fd 0 - stdin - and
+// fail, leaving g_display at its compile-time DEFAULT_WIDTH/HEIGHT. That was
+// harmless while the default matched the panel, and silently wrong the moment
+// it did not: on a 752x560 panel every caller of display_getRenderResolution()
+// was told the screen was 640x480.
+static int fb_fd = -1;
 static int DISPLAY_WIDTH = DEFAULT_WIDTH; // physical screen resolution
 static int DISPLAY_HEIGHT = DEFAULT_HEIGHT;
 struct timeval start_time, end_time;
@@ -106,6 +114,38 @@ void display_getResolution(void)
     fclose(file);
 }
 
+//
+//    Cache the framebuffer's authoritative geometry.
+//
+//    finfo.line_length is the real byte stride of a row: the driver may pad
+//    rows, so it is not necessarily xres * bpp. Anything that walks the
+//    framebuffer must use it rather than deriving a stride from xres.
+//
+void display_updateGeometry(void)
+{
+    g_display.bpp = g_display.vinfo.bits_per_pixel / 8; // bytes per pixel
+    g_display.stride = (int)g_display.finfo.line_length;
+
+    if (g_display.stride <= 0)
+        g_display.stride = g_display.vinfo.xres_virtual * g_display.bpp;
+}
+
+//
+//    Re-read the screeninfo from the driver.
+//
+//    yoffset, yres_virtual and line_length all change when the mode changes,
+//    so anything that depends on them has to refresh rather than trust what
+//    was cached at init.
+//
+void display_refreshVinfo(void)
+{
+    if (fb_fd < 0)
+        fb_fd = open("/dev/fb0", O_RDWR);
+    ioctl(fb_fd, FBIOGET_VSCREENINFO, &g_display.vinfo);
+    ioctl(fb_fd, FBIOGET_FSCREENINFO, &g_display.finfo);
+    display_updateGeometry();
+}
+
 void display_init(bool map_fb)
 {
     if (g_display.init_done)
@@ -127,6 +167,7 @@ void display_init(bool map_fb)
 
     display_getResolution();
     display_getRenderResolution();
+    display_updateGeometry();
 
     g_display.init_done = true;
 }
@@ -136,9 +177,7 @@ void display_init(bool map_fb)
 //
 void display_save(void)
 {
-    ioctl(fb_fd, FBIOGET_VSCREENINFO, &g_display.vinfo);
-    g_display.bpp = g_display.vinfo.bits_per_pixel / 8; // byte per pixel
-    g_display.stride = g_display.vinfo.xres_virtual * g_display.bpp;
+    display_refreshVinfo(); // refreshes bpp and stride from the driver too
     g_display.fb_ofs = (uint8_t *)g_display.fb_addr + (g_display.vinfo.yoffset * g_display.stride);
 
     // Save display area and clear
@@ -271,14 +310,29 @@ void display_readOrWriteBuffer(int index, display_t *display, uint32_t *pixels, 
 {
     int bufferPos = index * display->vinfo.yres;
 
+    if (display->fb_addr == NULL)
+        return;
+
+    // Address rows by the driver's real byte stride. finfo.line_length is not
+    // necessarily xres * bpp - the driver is free to pad rows - and deriving it
+    // from xres shears the image wherever that padding exists. Callers may hand
+    // us a display_t they populated themselves (see osd.h), so fall back
+    // through the screeninfo rather than trusting the cached field.
+    long stride = display->stride > 0
+                      ? (long)display->stride
+                      : (display->finfo.line_length > 0
+                             ? (long)display->finfo.line_length
+                             : (long)display->vinfo.xres *
+                                   (display->vinfo.bits_per_pixel / 8));
+
     for (int oy = 0; oy < rect.h; oy++) {
         int y = rect.y + oy;
 
-        if (y < 0 || y >= display->vinfo.yres)
+        if (y < 0 || y >= (int)display->vinfo.yres)
             continue;
 
         int virtualY = bufferPos + (rotate ? (display->vinfo.yres - 1) - y : y);
-        long baseOffset = (long)virtualY * display->vinfo.xres;
+        uint32_t *row = (uint32_t *)((uint8_t *)display->fb_addr + (long)virtualY * stride);
         int baseIndex = oy * rect.w;
 
         for (int ox = 0; ox < rect.w; ox++) {
@@ -288,27 +342,26 @@ void display_readOrWriteBuffer(int index, display_t *display, uint32_t *pixels, 
                 x = (display->vinfo.xres - 1) - x;
             }
 
-            if (x < 0 || x >= display->vinfo.xres)
+            if (x < 0 || x >= (int)display->vinfo.xres)
                 continue;
 
-            long offset = baseOffset + (long)x;
             int index = baseIndex + ox;
             if (write) {
                 if (mask) {
                     if (pixels[index] != 0) {
-                        display->fb_addr[offset] = 0;
+                        row[x] = 0;
                     }
                 }
                 else {
-                    display->fb_addr[offset] = pixels[index];
+                    row[x] = pixels[index];
                 }
             }
             else {
                 if (mask) {
-                    pixels[index] = display->fb_addr[offset] == 0 ? 1 : 0;
+                    pixels[index] = row[x] == 0 ? 1 : 0;
                 }
                 else {
-                    pixels[index] = display->fb_addr[offset];
+                    pixels[index] = row[x];
                 }
             }
         }
@@ -426,31 +479,37 @@ void display_writeBuffers(display_t *display, uint32_t **pixels, rect_t rect, bo
 }
 
 //
-//    Draw frame, fixed 640x480x32bpp for now
+//    Draw a one-pixel border around every framebuffer buffer.
+//
+//    Was hardcoded to 640x480x32bpp with a fixed three buffers, which writes
+//    past the mapping on any other geometry. Derived from the driver now.
 //
 void display_drawFrame(uint32_t color)
 {
-    uint32_t *ofs = g_display.fb_addr;
-    uint32_t i;
-    for (i = 0; i < 640; i++) {
-        ofs[i] = color;
-    }
-    ofs += 640 * 479;
-    for (i = 0; i < 640 * 2; i++) {
-        ofs[i] = color;
-    }
-    ofs += 640 * 480;
-    for (i = 0; i < 640 * 2; i++) {
-        ofs[i] = color;
-    }
-    ofs += 640 * 480;
-    for (i = 0; i < 640; i++) {
-        ofs[i] = color;
-    }
-    ofs = g_display.fb_addr + 639;
-    for (i = 0; i < 480 * 3 - 1; i++, ofs += 640) {
-        ofs[0] = color;
-        ofs[1] = color;
+    uint32_t *fb = g_display.fb_addr;
+    int stride_px, buffers, w, h, b, x, y;
+
+    if (!fb || g_display.vinfo.yres == 0)
+        return;
+
+    w = (int)g_display.vinfo.xres;
+    h = (int)g_display.vinfo.yres;
+    stride_px = g_display.stride > 0 ? g_display.stride / (int)sizeof(uint32_t) : w;
+    buffers = g_display.vinfo.yres_virtual / g_display.vinfo.yres;
+    if (buffers < 1)
+        buffers = 1;
+
+    for (b = 0; b < buffers; b++) {
+        uint32_t *buf = fb + (long)b * h * stride_px;
+
+        for (x = 0; x < w; x++) {
+            buf[x] = color;                              // top
+            buf[(long)(h - 1) * stride_px + x] = color;  // bottom
+        }
+        for (y = 0; y < h; y++) {
+            buf[(long)y * stride_px] = color;            // left
+            buf[(long)y * stride_px + w - 1] = color;    // right
+        }
     }
 }
 

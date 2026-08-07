@@ -125,7 +125,12 @@ void network_getSmbShares()
         }
 
         if (strstr(trimmedLine, "path = ") != NULL) {
-            strncpy(_network_shares[numShares - 1].path, trimmedLine + 7, STR_MAX);
+            // Bound was STR_MAX, equal to the destination size, into memory
+            // from realloc that is never zeroed - so a path of 256 characters
+            // or more left `path` with no terminator.
+            snprintf(_network_shares[numShares - 1].path,
+                     sizeof(_network_shares[numShares - 1].path), "%s",
+                     trimmedLine + 7);
             continue;
         }
 
@@ -151,11 +156,17 @@ void network_getSmbShares()
                     add_exclamation = true;
                 }
 
-                strncpy(_network_shares[numShares - 1].name, shareName, STR_MAX - 11);
-
-                if (add_exclamation) {
-                    strncat(_network_shares[numShares - 1].name, " (!)", STR_MAX - 11 - strlen(shareName));
-                }
+                // One bounded, always-terminated write instead of a strncpy
+                // whose bound equalled the destination size followed by a
+                // strncat. `_network_shares` comes from realloc and is never
+                // zeroed, so that strncpy left `name` unterminated for any
+                // share name of 245 characters or more - and the strncat's
+                // bound, STR_MAX - 11 - strlen(shareName), went *negative* in
+                // exactly that case, becoming a huge size_t and writing past
+                // `name` straight into `path`.
+                snprintf(_network_shares[numShares - 1].name,
+                         sizeof(_network_shares[numShares - 1].name), "%s%s",
+                         shareName, add_exclamation ? " (!)" : "");
 
                 found_shares = true;
             }

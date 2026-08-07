@@ -1,6 +1,7 @@
 #ifndef THEME_RENDER_DIALOG_H__
 #define THEME_RENDER_DIALOG_H__
 
+#include "system/display.h"
 #include "theme/config.h"
 #include "theme/resources.h"
 #include "utils/surfaceSetAlpha.h"
@@ -19,8 +20,8 @@ int __get_font_size()
     if (dialog_font_size == 0) {
         int w = 0, h = 0;
         if (TTF_SizeUTF8(resource_getFont(TITLE), DIALOG_LINE_BENCHMARK, &w, &h) == 0) {
-            double scale_x = (double)DIALOG_WIDTH * g_scale / w;
-            double scale_y = (double)DIALOG_LINE_HEIGHT * g_scale / h;
+            double scale_x = (double)theme_scaleX(DIALOG_WIDTH) / w;
+            double scale_y = (double)theme_scaleY(DIALOG_LINE_HEIGHT) / h;
             dialog_font_size = (int)((scale_x > scale_y ? scale_y : scale_x) * theme()->title.size);
         }
         else {
@@ -44,27 +45,28 @@ void theme_renderDialog(SDL_Surface *screen, const char *title_str, const char *
 
     SDL_Surface *title = TTF_RenderUTF8_Blended(resource_getFont(TITLE), title_str, theme()->total.color);
     if (title) {
-        SDL_Rect title_rect = {(g_display.width - title->w) / 2, center_rect.y + 25.0 * g_scale - title->h / 2};
+        SDL_Rect title_rect = {(g_display.width - title->w) / 2, center_rect.y + theme_scaleY(25) - title->h / 2};
         SDL_BlitSurface(title, NULL, screen, &title_rect);
         SDL_FreeSurface(title);
     }
 
     SDL_Surface *textbox = theme_textboxSurface(message_str, resource_getFont(TITLE), theme()->grid.color, ALIGN_CENTER);
-    if (textbox->w > DIALOG_WIDTH || textbox->h > 6 * (double)DIALOG_LINE_HEIGHT * g_scale) {
+    if (textbox->w > DIALOG_WIDTH || textbox->h > 6 * theme_scaleY(DIALOG_LINE_HEIGHT)) {
         SDL_FreeSurface(textbox);
         TTF_Font *temp_font = theme_loadFont(theme()->path, theme()->title.font, __get_font_size());
         textbox = theme_textboxSurface(message_str, temp_font, theme()->grid.color, ALIGN_CENTER);
         TTF_CloseFont(temp_font);
     }
     if (textbox) {
-        SDL_Rect textbox_rect = {(g_display.width - textbox->w) / 2, center_rect.y + 160.0 * g_scale - textbox->h / 2};
+        SDL_Rect textbox_rect = {(g_display.width - textbox->w) / 2, center_rect.y + theme_scaleY(160) - textbox->h / 2};
         SDL_BlitSurface(textbox, NULL, screen, &textbox_rect);
         SDL_FreeSurface(textbox);
     }
 
     SDL_Surface *button_a = resource_getSurface(BUTTON_A);
     if (show_hint && button_a->w < g_display.width) {
-        SDL_Rect hint_rect = {center_rect.x + pop_bg->w - 30.0 * g_scale, center_rect.y + pop_bg->h - 60.0 * g_scale};
+        SDL_Rect hint_rect = {center_rect.x + pop_bg->w - theme_scaleX(30),
+                              center_rect.y + pop_bg->h - theme_scaleY(THEME_FOOTER_HEIGHT)};
 
         SDL_Surface *button_b = resource_getSurface(BUTTON_B);
         SDL_Surface *label_ok = TTF_RenderUTF8_Blended(resource_getFont(HINT), lang_get(LANG_OK, LANG_FALLBACK_OK), theme()->hint.color);
@@ -110,7 +112,8 @@ void theme_renderDialogProgress(SDL_Surface *screen, const char *title_str,
     theme_renderDialog(screen, title_str, message_str, show_hint);
 
     SDL_Surface *dot = resource_getSurface(PROGRESS_DOT);
-    SDL_Rect dot_rect = {(g_display.width - dot->w) / 2 - 32.0 * g_scale, 225.0 * g_scale - dot->h / 2};
+    SDL_Rect dot_rect = {(g_display.width - dot->w) / 2 - theme_scaleX(32),
+                         g_display.height / 2 - theme_scaleY(15) - dot->h / 2};
 
     if (dialog_progress >= 1)
         SDL_BlitSurface(dot, NULL, screen, &dot_rect);

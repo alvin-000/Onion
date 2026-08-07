@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "utils/sdl_legacy.h"
 #include "system/battery.h"
 #include "system/device_model.h"
 #include "system/display.h"
@@ -99,9 +100,9 @@ int main(void)
     SDL_ShowCursor(SDL_DISABLE);
     SDL_EnableKeyRepeat(300, 50);
 
-    SDL_Surface *video = SDL_SetVideoMode(640, 480, 32, SDL_HWSURFACE);
-    SDL_Surface *screen =
-        SDL_CreateRGBSurface(SDL_HWSURFACE, 640, 480, 32, 0, 0, 0, 0);
+    // Draw at 640x480 as always; legacy_present() upscales to the panel.
+    SDL_Surface *screen = NULL;
+    SDL_Surface *video = legacy_openDisplay(640, 480, SDL_HWSURFACE, &screen);
 
     int min_delay = 15;
     int frame_delay = 80;
@@ -225,8 +226,7 @@ int main(void)
                     current_frame = (current_frame + 1) % frame_count;
                 }
 
-                SDL_BlitSurface(screen, NULL, video, NULL);
-                SDL_Flip(video);
+                legacy_present(screen, video);
 
                 acc_ticks -= frame_delay;
             }

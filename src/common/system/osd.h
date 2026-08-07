@@ -222,6 +222,11 @@ int overlay_surface(SDL_Surface *surface, int destX, int destY, int duration_ms,
         return -1;
     }
 
+    display->bpp = display->vinfo.bits_per_pixel / 8;
+    display->stride = (int)display->finfo.line_length;
+    if (display->stride <= 0)
+        display->stride = display->vinfo.xres_virtual * display->bpp;
+
     data->surface = surface;
     data->destX = destX;
     data->destY = destY;
@@ -264,6 +269,26 @@ static int _bar_max = 0;
 static uint32_t _bar_color = 0x00FFFFFF;
 #ifdef PLATFORM_MIYOOMINI
 static uint32_t *_bar_savebuf;
+
+// Row stride in 32-bit pixels. The driver may pad rows, so this is not
+// necessarily g_display.width.
+static uint32_t _bar_strideInPixels(void)
+{
+    if (g_display.stride > 0)
+        return (uint32_t)g_display.stride / sizeof(uint32_t);
+    return (uint32_t)g_display.width;
+}
+
+// How many buffers actually back the framebuffer right now. change_resolution()
+// leaves two; the boot mode has three.
+static uint32_t _bar_bufferCount(void)
+{
+    uint32_t n;
+    if (g_display.vinfo.yres == 0)
+        return 1;
+    n = g_display.vinfo.yres_virtual / g_display.vinfo.yres;
+    return n > 0 ? n : 1;
+}
 #endif
 
 void _print_bar(void)
@@ -271,9 +296,14 @@ void _print_bar(void)
 #ifdef PLATFORM_MIYOOMINI
     uint32_t *ofs = g_display.fb_addr;
     uint32_t i, j, curr, percentage = _bar_max > 0 ? _bar_value * g_display.height / _bar_max : 0;
+    uint32_t stride_px = _bar_strideInPixels();
+    uint32_t rows = g_display.height * _bar_bufferCount();
+
+    if (!ofs || stride_px < (uint32_t)g_display.width)
+        return;
 
     ofs += g_display.width - meterWidth;
-    for (i = 0; i < g_display.height * 3; i++, ofs += g_display.width) {
+    for (i = 0; i < rows; i++, ofs += stride_px) {
         curr = (i % g_display.height) < percentage ? _bar_color : 0;
         for (j = 0; j < meterWidth; j++)
             ofs[j] = curr;
@@ -290,9 +320,10 @@ void _bar_restoreBufferBehind(void)
     _print_bar();
     if (_bar_savebuf) {
         uint32_t i, j, *ofs = g_display.fb_addr, *ofss = _bar_savebuf;
+        uint32_t stride_px = _bar_strideInPixels();
         ofs += g_display.width - meterWidth;
         ofss += g_display.width - meterWidth;
-        for (i = 0; i < g_display.height; i++, ofs += g_display.width, ofss += g_display.width) {
+        for (i = 0; i < (uint32_t)g_display.height; i++, ofs += stride_px, ofss += g_display.width) {
             for (j = 0; j < meterWidth; j++)
                 ofs[j] = ofss[j];
         }
@@ -309,9 +340,10 @@ void _bar_saveBufferBehind(void)
     if ((_bar_savebuf = (uint32_t *)malloc(g_display.width * g_display.height *
                                            sizeof(uint32_t)))) {
         uint32_t i, j, *ofs = g_display.fb_addr, *ofss = _bar_savebuf;
+        uint32_t stride_px = _bar_strideInPixels();
         ofs += g_display.width - meterWidth;
         ofss += g_display.width - meterWidth;
-        for (i = 0; i < g_display.height; i++, ofs += g_display.width, ofss += g_display.width) {
+        for (i = 0; i < (uint32_t)g_display.height; i++, ofs += stride_px, ofss += g_display.width) {
             for (j = 0; j < meterWidth; j++)
                 ofss[j] = ofs[j];
         }

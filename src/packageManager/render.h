@@ -20,7 +20,7 @@ SDL_Surface *createLabelSurface(Package *package)
     SDL_FillRect(textbox, NULL, 0x000000FF);
 
     char label_text[STR_MAX], parens[STR_MAX] = "";
-    strncpy(label_text, package->name, STR_MAX - 1);
+    snprintf(label_text, sizeof(label_text), "%s", package->name);
 
     if (strchr(package->name, '(') != NULL) {
         parens[0] = '(';
@@ -173,8 +173,7 @@ bool confirmDoNothing(KeyState *keystate)
     SDL_Surface *image = IMG_Load("res/confirmDoNothing.png");
 
     SDL_BlitSurface(image, NULL, screen, NULL);
-    SDL_BlitSurface(screen, NULL, video, NULL);
-    SDL_Flip(video);
+    legacy_present(screen, video);
 
     bool confirm = false;
 
@@ -326,8 +325,7 @@ void renderApplication(void)
         displayLayersInstall();
     }
 
-    SDL_BlitSurface(screen, NULL, video, NULL);
-    SDL_Flip(video);
+    legacy_present(screen, video);
 }
 
 #endif // PACMAN_RENDER_H__

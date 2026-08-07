@@ -2,6 +2,7 @@
 #define GAME_SWITCHER_ROMSCREEN_H
 
 #include <SDL/SDL_image.h>
+#include <SDL/SDL_rotozoom.h>
 
 #include "system/screenshot.h"
 

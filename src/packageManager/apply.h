@@ -45,8 +45,7 @@ void applyAllChanges(bool auto_update)
                 SDL_BlitSurface(surfaceMessage, NULL, screen, &rectMessage);
                 SDL_FreeSurface(surfaceMessage);
 
-                SDL_BlitSurface(screen, NULL, video, NULL);
-                SDL_Flip(video);
+                legacy_present(screen, video);
 
                 sprintf(cmd, "/mnt/SDCARD/.tmp_update/script/pacman_install.sh \"%s\" \"%s\"", data_path, package->name);
                 system(cmd);

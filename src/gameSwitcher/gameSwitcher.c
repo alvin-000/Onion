@@ -71,8 +71,8 @@ int main(int argc, char *argv[])
     appState.custom_header = loadOptionalImage("extra/gs-top-bar");
     appState.custom_footer = loadOptionalImage("extra/gs-bottom-bar");
 
-    appState.header_height = getHeightOrDefault(appState.custom_header, 60.0 * g_scale);
-    appState.footer_height = getHeightOrDefault(appState.custom_footer, 60.0 * g_scale);
+    appState.header_height = getHeightOrDefault(appState.custom_header, theme_scaleY(THEME_HEADER_HEIGHT));
+    appState.footer_height = getHeightOrDefault(appState.custom_footer, theme_scaleY(THEME_FOOTER_HEIGHT));
 
     print_debug("gameSwitcher started\n");
 

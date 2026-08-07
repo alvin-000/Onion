@@ -1,14 +1,24 @@
 #ifndef RENDER_FOOTER_H__
 #define RENDER_FOOTER_H__
 
+#include "system/display.h"
 #include "theme/background.h"
 #include "theme/config.h"
 #include "theme/resources.h"
 
+// Top of the hint bar. In design space this is y=420; deriving it from the
+// panel instead keeps the bar flush with the bottom edge on any screen.
+#define THEME_FOOTER_TOP (g_display.height - theme_scaleY(THEME_FOOTER_HEIGHT))
+
 void theme_renderStandardHint(SDL_Surface *screen, const char *btn_a_str,
                               const char *btn_b_str)
 {
-    int offsetX = 20.0 * g_scale;
+    // Design-space y=450 and y=449 respectively; the one-pixel difference is
+    // preserved so 640x480 output is unchanged.
+    const int hint_center_y = THEME_FOOTER_TOP + theme_scaleY(30);
+    const int label_center_y = THEME_FOOTER_TOP + theme_scaleY(29);
+
+    int offsetX = theme_scaleX(20);
     char label_a_str[STR_MAX] = " ", label_b_str[STR_MAX] = " ";
 
     if (!theme()->hideLabels.hints) {
@@ -18,8 +28,8 @@ void theme_renderStandardHint(SDL_Surface *screen, const char *btn_a_str,
             strncpy(label_b_str, btn_b_str, STR_MAX - 1);
     }
 
-    SDL_Rect btn_a_rect = {offsetX, 450.0 * g_scale};
-    SDL_Rect label_open_rect = {0, 449.0 * g_scale};
+    SDL_Rect btn_a_rect = {offsetX, hint_center_y};
+    SDL_Rect label_open_rect = {0, label_center_y};
 
     SDL_Surface *label_open, *label_back;
     SDL_Surface *button_a = resource_getSurface(BUTTON_A);
@@ -38,12 +48,12 @@ void theme_renderStandardHint(SDL_Surface *screen, const char *btn_a_str,
         label_open_rect.x = offsetX;
         label_open_rect.y -= label_open->h / 2;
         SDL_BlitSurface(label_open, NULL, screen, &label_open_rect);
-        offsetX += label_open->w + 30.0 * g_scale;
+        offsetX += label_open->w + theme_scaleX(30);
     }
 
     if (btn_b_str != NULL && strlen(label_b_str) > 0) {
         SDL_Surface *button_b = resource_getSurface(BUTTON_B);
-        SDL_Rect btn_b_rect = {offsetX, 450.0 * g_scale - button_b->h / 2};
+        SDL_Rect btn_b_rect = {offsetX, hint_center_y - button_b->h / 2};
         SDL_BlitSurface(button_b, NULL, screen, &btn_b_rect);
         offsetX += button_b->w + 5;
 
@@ -51,7 +61,7 @@ void theme_renderStandardHint(SDL_Surface *screen, const char *btn_a_str,
             TTF_RenderUTF8_Blended(font_hint, label_b_str, theme()->hint.color);
 
         if (label_back) {
-            SDL_Rect label_back_rect = {offsetX, 449.0 * g_scale - label_back->h / 2};
+            SDL_Rect label_back_rect = {offsetX, label_center_y - label_back->h / 2};
             SDL_BlitSurface(label_back, NULL, screen, &label_back_rect);
             SDL_FreeSurface(label_back);
         }
@@ -62,7 +72,7 @@ void theme_renderStandardHint(SDL_Surface *screen, const char *btn_a_str,
 
 void theme_renderFooter(SDL_Surface *screen)
 {
-    int footer_height = 60.0 * g_scale;
+    int footer_height = theme_scaleY(THEME_FOOTER_HEIGHT);
     SDL_Rect footer_rect = {0, g_display.height - footer_height, g_display.width, footer_height};
     SDL_BlitSurface(theme_background(), &footer_rect, screen, &footer_rect);
     SDL_BlitSurface(resource_getSurface(BG_FOOTER), NULL, screen, &footer_rect);
@@ -74,16 +84,18 @@ void theme_renderFooterStatus(SDL_Surface *screen, int current_num,
                               int total_num)
 {
     if (old_status_width != -1) {
-        SDL_Rect status_pos = theme_scaleRect((SDL_Rect){620, 420, 0, 60});
+        SDL_Rect status_pos = {g_display.width - theme_scaleX(20), THEME_FOOTER_TOP, 0,
+                               theme_scaleY(THEME_FOOTER_HEIGHT)};
         status_pos.x -= old_status_width;
         status_pos.w = old_status_width;
 
-        SDL_Rect status_size = {status_pos.x, 0, old_status_width, 60.0 * g_scale};
+        SDL_Rect status_size = {status_pos.x, 0, old_status_width, theme_scaleY(THEME_FOOTER_HEIGHT)};
 
         SDL_BlitSurface(theme_background(), &status_pos, screen, &status_pos);
         SDL_BlitSurface(resource_getSurface(BG_FOOTER), &status_size, screen, &status_pos);
     }
 
+    const int status_center_y = THEME_FOOTER_TOP + theme_scaleY(29);
     TTF_Font *font_hint = resource_getFont(HINT);
 
     if (total_num == 0)
@@ -99,12 +111,13 @@ void theme_renderFooterStatus(SDL_Surface *screen, int current_num,
 
     if (total) {
         SDL_Rect current_rect = {0, 0};
-        SDL_Rect total_rect = {(int)(620.0 * g_scale) - total->w, (int)(449.0 * g_scale) - total->h / 2};
+        SDL_Rect total_rect = {g_display.width - theme_scaleX(20) - total->w,
+                               status_center_y - total->h / 2};
 
         SDL_BlitSurface(total, NULL, screen, &total_rect);
         if (current) {
             current_rect.x = total_rect.x - current->w;
-            current_rect.y = (int)(449.0 * g_scale) - current->h / 2;
+            current_rect.y = status_center_y - current->h / 2;
             old_status_width = total->w + current->w;
             SDL_BlitSurface(current, NULL, screen, &current_rect);
             SDL_FreeSurface(current);

@@ -20,6 +20,16 @@ static SDL_Surface *g_image_cache_next = NULL;
 
 #define MIN(a, b) (a < b) ? (a) : (b)
 
+//
+//    `stretch` is a misnomer: the scale is MIN(ratio_x, ratio_y), so aspect is
+//    always preserved. What it really controls is whether an image *smaller*
+//    than the target is enlarged to fit, or left at 1:1 and centred.
+//
+//    It matters on a 752x560 panel, where the 640x480 artwork this displays -
+//    the Quick Guide pages, the Onion manual, older romScreens - is smaller on
+//    both axes and so was never touched, landing as a small image in a black
+//    frame.
+//
 SDL_Surface *scaleImageIfNecessary(SDL_Surface *image, SDL_Rect target, bool stretch)
 {
     if (image->w > target.w || image->h > target.h || (stretch && (image->w < target.w || image->h < target.h))) {
@@ -27,7 +37,12 @@ SDL_Surface *scaleImageIfNecessary(SDL_Surface *image, SDL_Rect target, bool str
         double ratio_y = (double)target.h / image->h;
         double scale = MIN(ratio_x, ratio_y);
 
-        SDL_Surface *scaledImage = zoomSurface(image, scale, scale, SMOOTHING_OFF);
+        // Smooth when enlarging, nearest-neighbour when shrinking. 640 -> 752
+        // is 1.175, not an integer, so nearest-neighbour would duplicate whole
+        // columns at an uneven cadence and make text shimmer - the same reason
+        // legacy_present() smooths. Shrinking keeps the existing behaviour.
+        SDL_Surface *scaledImage =
+            zoomSurface(image, scale, scale, scale > 1.0 ? SMOOTHING_ON : SMOOTHING_OFF);
 
         if (scaledImage) {
             printf_debug("scaled image from %dx%d to %dx%d\n", image->w, image->h, scaledImage->w, scaledImage->h);
@@ -64,7 +79,7 @@ SDL_Surface *loadImage(const char *image_path, SDL_Surface *screen)
         return NULL;
     }
 
-    SDL_Surface *scaledImage = scaleImageIfNecessary(image, screen->clip_rect, false);
+    SDL_Surface *scaledImage = scaleImageIfNecessary(image, screen->clip_rect, true);
     if (scaledImage) {
         SDL_FreeSurface(image);
         return scaledImage;
@@ -93,7 +108,7 @@ void drawImage(SDL_Surface *image, SDL_Surface *screen, const SDL_Rect *frame)
         target = *frame;
     }
 
-    SDL_Surface *scaledImage = scaleImageIfNecessary(image, target, false);
+    SDL_Surface *scaledImage = scaleImageIfNecessary(image, target, true);
     if (scaledImage) {
         SDL_Rect image_pos = getCenterPos(scaledImage, target);
         SDL_BlitSurface(scaledImage, NULL, screen, &image_pos);
