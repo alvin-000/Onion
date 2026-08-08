@@ -20,7 +20,15 @@ logfile=$(basename "$0" .sh)
 cd $sysdir
 
 device_model=$(cat /tmp/deviceModel)
-has_networking=$([ $device_model -eq 354 ] && echo 1 || echo 0)
+# Mirrors HAS_WIFI() in src/common/system/device_model.h, which counts both the
+# Mini+ (354) and the Flip (285). Testing only for 354 meant has_networking was
+# 0 on a Flip, and every romscript declaring require_networking=1 - Scraper and
+# Netplay - was silently skipped further down. The apps were installed and
+# working; they just never appeared in the menu.
+case "$device_model" in
+354 | 285) has_networking=1 ;;
+*) has_networking=0 ;;
+esac
 
 ROM_TYPE_UNKNOWN=0
 ROM_TYPE_GAME=1

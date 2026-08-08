@@ -503,7 +503,10 @@ check_ntpstate() {
         if [ "$got_ip" -eq 1 ]; then
             while true; do
                 log "NTPwait: get_time attempt $attempts"
-                if ping -q -c 1 -W 1 worldtimeapi.org > /dev/null 2>&1; then
+                # Gate on a host that is actually used. worldtimeapi.org
+                # answers ICMP while its HTTP is dead, so pinging it reported
+                # "network OK" and proved nothing.
+                if ping -q -c 1 -W 1 time.google.com > /dev/null 2>&1; then
                     if get_time; then
                         ret_val=0
                         break
@@ -525,56 +528,67 @@ check_ntpstate() {
     return "$ret_val"
 }
 
-get_time() { # handles 2 types of network time, instant from an API or longer from an NTP server, if the instant API checks fails it will fallback to the longer ntp
+get_time() { # timezone offset from an IP lookup, clock from NTP - see below for why the clock is never taken from a time API
     log "NTP: started time update"
 
-    response=$(curl -s -m 3 http://worldtimeapi.org/api/ip.txt)
-    utc_datetime=$(echo "$response" | grep -o 'utc_datetime: [^.]*' | cut -d ' ' -f2 | sed "s/T/ /")
+    # The clock comes from NTP, never from a JSON API.
+    #
+    # Measured 2026-08-08 against Google, Cloudflare and Amazon HTTP Date
+    # headers, which agreed with each other within one second:
+    #
+    #   timeapi.io          22 minutes slow
+    #   worldtimeapi.org    HTTP dead (000, empty body) though still pinging
+    #
+    # A service that answers confidently with the wrong time is worse than one
+    # that fails, because success here suppressed the accurate NTP fallback
+    # below - which is how a device ends up sitting 20+ minutes off.
+    #
+    # timeapi.io is still used for the timezone *offset*: that data was correct
+    # when its clock was not, and there is no NTP equivalent for it.
     if ! flag_enabled "manual_tz"; then
-        utc_offset="UTC$(echo "$response" | grep -o 'utc_offset: [^.]*' | cut -d ' ' -f2)"
-    fi
-
-    if [ -z "$utc_datetime" ]; then
-        log "NTP: Failed to get time from worldtimeapi.org, trying timeapi.io"
-        utc_datetime=$(curl -s -k -m 5 https://timeapi.io/api/Time/current/zone?timeZone=UTC | grep -o '"dateTime":"[^.]*' | cut -d '"' -f4 | sed 's/T/ /')
-        if ! flag_enabled "manual_tz"; then
-            ip_address=$(curl -s -k -m 5 https://api.ipify.org)
-            utc_offset_seconds=$(curl -s -k -m 5 https://timeapi.io/api/TimeZone/ip?ipAddress=$ip_address | jq '.currentUtcOffset.seconds')
-            utc_offset="$(convert_seconds_to_utc_offset $utc_offset_seconds)"
+        ip_address=$(curl -s -k -m 5 https://api.ipify.org)
+        if [ -n "$ip_address" ]; then
+            utc_offset_seconds=$(curl -s -k -m 5 "https://timeapi.io/api/TimeZone/ip?ipAddress=$ip_address" | jq '.currentUtcOffset.seconds')
+            # Only accept a real number. The previous code assigned
+            # "UTC$(...)" unconditionally, so a failed parse wrote a bare
+            # "UTC" into .tz and pinned the device to UTC wherever it was.
+            case "$utc_offset_seconds" in
+            '' | null) log "NTP: timezone lookup returned nothing, leaving .tz alone" ;;
+            *) utc_offset="$(convert_seconds_to_utc_offset $utc_offset_seconds)" ;;
+            esac
         fi
     fi
 
-    if [ -n "$utc_datetime" ]; then
-        playActivity stop_all
+    playActivity stop_all
 
-        if [ -n "$utc_offset" ]; then
-            echo "$utc_offset" | sed 's/\+/_/' | sed 's/-/+/' | sed 's/_/-/' > $sysdir/config/.tz
-            cp $sysdir/config/.tz $sysdir/config/.tz_sync
-            sync
-            set_tzid
-        fi
+    if [ -n "$utc_offset" ]; then
+        echo "$utc_offset" | sed 's/\+/_/' | sed 's/-/+/' | sed 's/_/-/' > $sysdir/config/.tz
+        cp $sysdir/config/.tz $sysdir/config/.tz_sync
+        sync
+        set_tzid
+    fi
 
-        if date -u -s "$utc_datetime" > /dev/null 2>&1; then
-            hwclock -w
-            log "NTP: Time successfully aquired using API"
-            touch /tmp/ntp_synced
-            playActivity resume
-            return 0
-        fi
-
+    if ntpdate -t 3 -u time.google.com > /dev/null 2>&1; then
+        hwclock -w
+        log "NTP: Time successfully acquired using NTP"
+        touch /tmp/ntp_synced
         playActivity resume
-    fi
-
-    log "NTP: Failed to get time via timeapi.io as well, falling back to NTP."
-    rm $sysdir/config/.tz_sync 2> /dev/null
-
-    ntpdate -t 3 -u time.google.com
-    if [ $? -eq 0 ]; then
-        log "NTP: Time successfully aquired using NTP"
         return 0
     fi
 
-    log "NTP: Failed to synchronize time using NTPdate, both methods have failed."
+    playActivity resume
+
+    log "NTP: time.google.com did not answer, trying pool.ntp.org"
+    rm $sysdir/config/.tz_sync 2> /dev/null
+
+    if ntpdate -t 3 -u pool.ntp.org > /dev/null 2>&1; then
+        hwclock -w
+        log "NTP: Time successfully acquired using pool.ntp.org"
+        touch /tmp/ntp_synced
+        return 0
+    fi
+
+    log "NTP: Failed to synchronize time, all methods have failed."
     return 1
 }
 
