@@ -5,7 +5,7 @@ mediadir=/mnt/SDCARD/Media/PDF
 while :
 do
 	cd $sysdir
-	./bin/st -q -e "$sysdir/script/file_selector.sh" "PDF Reader" "$mediadir" "pdf"
+	$sysdir/script/run_scaled.sh ./bin/st -q -e "$sysdir/script/file_selector.sh" "PDF Reader" "$mediadir" "pdf"
 	retVal=$?
 	
 	# if we catch that terminal app has been killed then we exit
