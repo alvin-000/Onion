@@ -58,15 +58,38 @@ void getImageDir(const char *theme_path, char *image_dir)
     strcpy(image_dir, "res");
 }
 
+static uint32_t saved_brightness = 0;
+
+//
+//    Blank the panel with the PWM backlight, not display_setScreen().
+//
+//    display_setScreen(false) does two things beyond dropping the screen: it
+//    pulls GPIO4 low, and it calls display_save(), which reads
+//    g_display.fb_addr. chargingState never calls display_init() - it opens the
+//    display through legacy_openDisplay(), and display_getRenderResolution()
+//    reads the geometry without ever mmapping - so that pointer is null and
+//    display_save() walks it. Called from inside the loop, that killed the
+//    process silently: traced on a Flip, "idle timeout -> suspending" was the
+//    last line written and the process was gone two seconds later, never
+//    reaching the next trace point.
+//
+//    GPIO4 is the other half of the original bug. Nothing raises it again on
+//    the next boot, so a device that was blanked this way and then powered off
+//    comes back up with a dark panel - which is exactly what a charging boot
+//    looked like.
+//
 void suspend(bool enabled, SDL_Surface *video)
 {
     suspended = enabled;
     if (suspended) {
         SDL_FillRect(video, NULL, 0);
         SDL_Flip(video);
+        saved_brightness = display_getBrightnessRaw();
+        display_setBrightnessRaw(0);
     }
-    // system_powersave(suspended);
-    display_setScreen(!suspended);
+    else {
+        display_setBrightnessRaw(saved_brightness ? saved_brightness : 40);
+    }
 }
 
 static void sigHandler(int sig)
@@ -200,6 +223,22 @@ int main(void)
 
         if (!suspended) {
             if (ticks - display_timer >= DISPLAY_TIMEOUT) {
+                // Power off on devices that can, blank the screen on those
+                // that cannot - upstream's original split, restored.
+                //
+                // This never worked before, but not because the design was
+                // wrong: display_setScreen(false) crashed in display_save()
+                // (see suspend() above) on the line immediately before
+                // system("shutdown"), so the shutdown was never reached and the
+                // device carried on booting with the panel disabled. With that
+                // call replaced, the power-off actually happens.
+                //
+                // Verified: a manual shutdown with the charger attached stays
+                // off - the charger does not power the device back on - so
+                // there is nothing to be gained by suspending here instead.
+                //
+                // The Mini keeps suspending because it has no poweroff:
+                // bin/shutdown reboots on device 283 rather than powering down.
                 if (HAS_AXP()) {
                     quit = true;
                     turn_off = true;
@@ -235,6 +274,7 @@ int main(void)
         msleep(min_delay);
     }
 
+
     // Clear the screen when exiting
     SDL_FillRect(video, NULL, 0);
     SDL_Flip(video);
@@ -251,7 +291,10 @@ int main(void)
 
     if (turn_off) {
 #ifdef PLATFORM_MIYOOMINI
-        display_setScreen(false);
+        // Backlight only - not display_setScreen(false), which pulls GPIO4 low
+        // and leaves it there. Nothing raises it on the next boot, so a device
+        // powered off this way came back with a dark panel.
+        display_setBrightnessRaw(0);
         system("shutdown; sleep 10");
 #endif
     }
