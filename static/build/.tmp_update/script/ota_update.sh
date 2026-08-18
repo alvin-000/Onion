@@ -11,7 +11,7 @@ BLUE='\033[1;34m'
 NC='\033[0m' # No Color
 
 # Repository name :
-GITHUB_REPOSITORY=OnionUI/Onion
+GITHUB_REPOSITORY=alvin-000/Onion
 
 # channel : stable or beta
 channel=$(cat "$sysdir/config/ota_channel" 2> /dev/null)
@@ -41,6 +41,7 @@ main() {
 
 	sleep 2
 	channel_choice
+	variant_choice
 
 	get_release_info
 	if [ $? -eq 1 ]; then
@@ -99,7 +100,38 @@ check_connection() {
 }
 
 run_bootstrap() {
-	curl -k -s https://raw.githubusercontent.com/OnionUI/Onion/main/static/build/.tmp_update/script/ota_bootstrap.sh | sh
+	curl -k -s https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/static/build/.tmp_update/script/ota_bootstrap.sh | sh
+}
+
+#
+#   Which build family this device runs: O2 or O0.
+#
+#   Two assets match "Onion-v" in every release - Onion-v<version>-O2.zip and
+#   -O0.zip - so the selection below has to pick one, and picking wrong would
+#   silently move someone between build families.
+#
+#   The build writes onionVersion/variant.txt, which ships inside onion.pak, so
+#   any install or upgrade refreshes it. Only a device on a build made before
+#   that existed reaches the prompt, and answering writes the file, so it is
+#   asked once per device rather than every update.
+#
+variant_choice() {
+	variant=$(cat "$sysdir/onionVersion/variant.txt" 2> /dev/null)
+
+	case "$variant" in
+	O2 | O0) return ;;
+	esac
+
+	choice=$(echo -e "O2 (recommended)\nO0 (legacy)" | $sysdir/script/shellect.sh -t "Which build is installed?" -b "Press A to validate your choice.")
+	clear
+
+	case "$choice" in
+	"O0 (legacy)") variant="O0" ;;
+	*) variant="O2" ;;
+	esac
+
+	mkdir -p "$sysdir/onionVersion"
+	echo -n "$variant" > "$sysdir/onionVersion/variant.txt"
 }
 
 channel_choice() {
@@ -124,11 +156,29 @@ get_release_info() {
 		return 1
 	fi
 
-	Release_asset=$(echo "$Release_assets_info" | jq '.assets[]? | select(.name | contains("Onion-v"))')
+	# Both build families are published, so match the one this device runs -
+	# selecting on "Onion-v" alone returns two assets, and every jq call after
+	# it then yields two values, which puts two URLs into $Release_url.
+	variant=$(cat "$sysdir/onionVersion/variant.txt" 2> /dev/null)
+	case "$variant" in
+	O2 | O0) ;;
+	*) variant="O2" ;;
+	esac
+
+	Release_asset=$(echo "$Release_assets_info" | jq --arg v "-$variant.zip" '.assets[]? | select(.name | contains("Onion-v")) | select(.name | endswith($v))')
+
+	if [ -z "$Release_asset" ]; then
+		echo -e "${GREEN}DONE${NC}\n\n" \
+			"No $variant build in the latest $channel release\n"
+		return 1
+	fi
 
 	Release_url=$(echo $Release_asset | jq '.browser_download_url' | tr -d '"')
 	Release_FullVersion=$(echo $Release_asset | jq '.name' | tr -d "\"" | sed 's/^Onion-v//g' | sed 's/\.zip$//g')
 	Release_Version=$(echo $Release_FullVersion | sed 's/-.*$//g')
+	# The build date is what actually distinguishes these releases: every one of
+	# them is 4.5.0, so comparing that alone can never see a newer build.
+	Release_Date_Stamp=$(echo "$Release_FullVersion" | grep -oE '[0-9]{8}' | head -1)
 	Release_size=$(echo $Release_asset | jq -r '.size')
 	Release_size_MB=$(echo "$(($Release_size / 1024 / 1024))MB")
 	Release_Date=$(echo $Release_asset | jq -r '.created_at')
@@ -136,6 +186,7 @@ get_release_info() {
 
 	Current_FullVersion=$(installUI --version)
 	Current_Version=$(echo $Current_FullVersion | sed 's/-.*$//g')
+	Current_Date_Stamp=$(echo "$Current_FullVersion" | grep -oE '[0-9]{8}' | head -1)
 
 	echo -e "${GREEN}DONE${NC}"
 
@@ -154,6 +205,18 @@ get_release_info() {
 
 	v1=$(get_version $Current_Version)
 	v2=$(get_version $Release_Version)
+
+	# Same release version - fall back to the build date. The old test compared
+	# the full version strings, which never matched once the asset name carried
+	# a -O2/-O0 suffix the installed version string does not, so a device was
+	# offered an update to the build it was already running.
+	if [ "$v1" -eq "$v2" ] && [ -n "$Release_Date_Stamp" ] && [ -n "$Current_Date_Stamp" ]; then
+		if [ "$Current_Date_Stamp" -ge "$Release_Date_Stamp" ]; then
+			echo -e "Version is up to date\n"
+			return 1
+		fi
+		return 0
+	fi
 
 	if [ $v1 -gt $v2 ] || ([ $v1 -eq $v2 ] && [ "$Current_FullVersion" = "$Release_FullVersion" ]); then
 		echo -e "Version is up to date\n"

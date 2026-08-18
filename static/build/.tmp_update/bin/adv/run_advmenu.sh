@@ -9,7 +9,9 @@ echo "Running advancemenu now !"
 
 cd $progdir
 
-HOME=$homedir ./advmenu
+# advmenu presents through SDL (SDL_Flip), so libuiscale scales its 640x480
+# surface to the panel - see script/run_scaled.sh. No-op on 640x480 devices.
+HOME=$homedir $sysdir/script/run_scaled.sh ./advmenu
 
 (sleep 0.5 && echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable) &
 

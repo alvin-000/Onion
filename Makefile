@@ -1,7 +1,7 @@
 ###########################################################
 
 TARGET=Onion
-VERSION=4.5.0-beta-20260809
+VERSION=4.5.0-beta-20260818
 RA_SUBVERSION=1.22.2
 
 ###########################################################
@@ -79,6 +79,10 @@ $(CACHE)/.setup:
 # Set version number
 	@mkdir -p $(BUILD_DIR)/.tmp_update/onionVersion
 	@echo -n "v$(VERSION)" > $(BUILD_DIR)/.tmp_update/onionVersion/version.txt
+# Which build family this package is, so OTA can offer the matching asset
+# rather than guessing between the O0 and O2 zips. Ships inside onion.pak like
+# version.txt, so every install and upgrade refreshes it.
+	@echo -n "$(OPT_LABEL)" > $(BUILD_DIR)/.tmp_update/onionVersion/variant.txt
 	@sed -i "s/{VERSION}/$(VERSION)/g" $(BUILD_DIR)/autorun.inf
 # Copy all resources from src folders
 	@find \
