@@ -43,6 +43,8 @@
 
 #include <SDL/SDL.h>
 
+#include "utils/gfx_present.h"
+
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
 #define UISCALE_NEON 1
@@ -123,8 +125,13 @@ static double now_us(void)
     return (double)ts.tv_sec * 1e6 + (double)ts.tv_nsec / 1e3;
 }
 
+/* Whether the MI_GFX hardware path is in use: -1 not yet probed, 0 unavailable
+   (CPU scaler), 1 live. Declared here because the profiler reports it. */
+static int g_gfx_ok = -1;
+
 static unsigned long p_flip, p_updrect, p_updrects; /* entry point counts */
 static unsigned long p_scales;                      /* upscales actually run */
+static unsigned long p_skipped; /* presents whose source was unchanged */
 static double p_scale_us, p_scale_us_max;
 static double p_phase_scale_us, p_phase_copy_us; /* split of the total above */
 static double p_phase_mirror_us;  /* uncached read of the hardware shadow */
@@ -146,7 +153,7 @@ static void profile_report(void)
         fprintf(f,
                 "presents=%lu in %.0fms (%.1f/s) | total avg=%.2fms max=%.2fms "
                 "[mirror=%.2fms scale=%.2fms copy=%.2fms] (%.0f%% of wall) | "
-                "flip=%lu updrect=%lu updrects=%lu | avg_dirty=%llupx of %d\n",
+                "flip=%lu updrect=%lu updrects=%lu skipped=%lu gfx=%d | avg_dirty=%llupx of %d\n",
                 p_scales, wall / 1000.0,
                 wall > 0 ? p_scales * 1e6 / wall : 0.0,
                 p_scale_us / p_scales / 1000.0, p_scale_us_max / 1000.0,
@@ -154,13 +161,13 @@ static void profile_report(void)
                 p_phase_scale_us / p_scales / 1000.0,
                 p_phase_copy_us / p_scales / 1000.0,
                 wall > 0 ? p_scale_us * 100.0 / wall : 0.0,
-                p_flip, p_updrect, p_updrects,
+                p_flip, p_updrect, p_updrects, p_skipped, g_gfx_ok,
                 p_dirty_n ? p_dirty_px / p_dirty_n : 0ULL,
                 g_real ? g_real->w * g_real->h : 0);
         fclose(f);
     }
 
-    p_flip = p_updrect = p_updrects = 0;
+    p_flip = p_updrect = p_updrects = p_skipped = 0;
     p_scale_us = p_scale_us_max = 0;
     p_phase_scale_us = p_phase_copy_us = p_phase_mirror_us = 0;
     p_dirty_px = 0;
@@ -375,10 +382,43 @@ static int ensure_srcmirror(int w, int h)
     return 1;
 }
 
+/* Hash of the source frame that produced the current contents of g_stage.
+ *
+ * MainUI presents every frame twice. The framebuffer is double-buffered
+ * (752x1120, two 560-row buffers), and MainUI redraws the same content into
+ * whichever buffer it just flipped away from, so the second present of a pair
+ * scales pixels that are byte-identical to the ones already staged. Measured on
+ * a Mini Flip: 2.0 presents per input event, unchanged by disabling the preview
+ * pane or by sending key-down edges only, and the two framebuffer buffers
+ * compare byte-identical once the screen settles.
+ *
+ * The copy still has to run - the two presents write different buffers - but
+ * the scale does not. Hashing the already-mirrored source runs out of cache at
+ * about 2ms; the scale it skips costs 37ms. */
+static uint64_t g_stage_hash;
+static int g_stage_valid;
+
+static uint64_t frame_hash(const uint8_t *src, int pitch, int w, int h)
+{
+    uint32_t h1 = 2166136261u, h2 = 0x9e3779b9u;
+    int y, x;
+
+    for (y = 0; y < h; y++) {
+        const uint32_t *row = (const uint32_t *)(src + (size_t)y * pitch);
+        for (x = 0; x < w; x++) {
+            uint32_t v = row[x];
+            h1 = (h1 ^ v) * 16777619u;
+            h2 = (h2 + v) * 2654435761u + (h2 >> 15);
+        }
+    }
+    return ((uint64_t)h1 << 32) | h2;
+}
+
 static int ensure_stage(int w, int h)
 {
     if (g_stage && g_stage_w == w && g_stage_h == h)
         return 1;
+    g_stage_valid = 0;
     free(g_stage);
     g_stage = malloc((size_t)w * h * sizeof(*g_stage));
     if (!g_stage) {
@@ -389,6 +429,11 @@ static int ensure_stage(int w, int h)
     g_stage_h = h;
     return 1;
 }
+
+
+/* The hardware scaler lives in ../common/utils/gfx_present.h, shared with
+   legacy_present() so both present paths use one implementation. g_gfx_ok
+   mirrors gfxp_ready() for the profiler. */
 
 /* Copy the program's canvas onto the real video surface, scaling it up and
    rotating it 180 degrees for the panel. */
@@ -439,22 +484,67 @@ static void blit_upscaled(void)
         /* Phase 0: pull the hardware shadow into cached RAM with linear row
            copies, so the scaler's four taps per pixel do not each fault out to
            uncached GFX memory. */
-        if (g_fake_hw && ensure_srcmirror(g_fake->w, g_fake->h)) {
-            const int srow = g_fake->w * 4;
-            for (y = 0; y < g_fake->h; y++)
-                memcpy((uint8_t *)g_srcmirror + (size_t)y * srow,
-                       (const uint8_t *)g_fake->pixels + (size_t)y * g_fake->pitch,
-                       srow);
-            src = (const uint8_t *)g_srcmirror;
-            spitch = srow;
+        {
+            /* The mirror lands in the MMA buffer when MI_GFX is live, so the
+               same pass that pulls the frame out of uncached memory also puts
+               it somewhere the 2D engine can read. Same cost either way. */
+            int use_gfx = gfxp_init(g_fake->w, g_fake->h, g_real->w, g_real->h);
+            void *mirror_into = use_gfx ? gfxp_src() : (void *)g_srcmirror;
+            g_gfx_ok = gfxp_ready();
+
+            if (g_fake_hw && (use_gfx || ensure_srcmirror(g_fake->w, g_fake->h))) {
+                const int srow = g_fake->w * 4;
+                for (y = 0; y < g_fake->h; y++)
+                    memcpy((uint8_t *)mirror_into + (size_t)y * srow,
+                           (const uint8_t *)g_fake->pixels + (size_t)y * g_fake->pitch,
+                           srow);
+                src = (const uint8_t *)mirror_into;
+                spitch = srow;
+            }
+            else if (use_gfx) {
+                /* software shadow: still has to reach MMA memory to be blitted */
+                for (y = 0; y < g_fake->h; y++)
+                    memcpy((uint8_t *)gfxp_src() + (size_t)y * g_fake->w * 4,
+                           (const uint8_t *)g_fake->pixels + (size_t)y * g_fake->pitch,
+                           g_fake->w * 4);
+            }
         }
 
-        if (prof)
-            tm = now_us();
+        /* Phase 1: scale + rotate into cached RAM - but only if the source
+           actually changed. See g_stage_hash: MainUI presents each frame twice
+           to fill both framebuffer buffers, and the second of the pair is the
+           same pixels. The copy below still has to run, because that present
+           targets the other buffer. */
+        {
+            uint64_t hash = frame_hash(src, spitch, g_fake->w, g_fake->h);
+            int unchanged = g_stage_valid && hash == g_stage_hash;
 
-        /* Phase 1: scale + rotate into cached RAM. */
-        scale_argb32(src, spitch, g_fake->w, g_fake->h,
-                     (uint8_t *)g_stage, g_real->w * 4, g_real->w, g_real->h, !g_fake_hw);
+            if (prof)
+                tm = now_us();
+
+            if (!unchanged) {
+                int done = 0;
+
+                if (gfxp_ready()) {
+                    done = gfxp_blit(!g_fake_hw);
+                    if (done)
+                        memcpy(g_stage, gfxp_dst(),
+                               (size_t)g_real->w * g_real->h * 4);
+                    else
+                        gfxp_teardown(); /* one failure retires the path */
+                    g_gfx_ok = gfxp_ready();
+                }
+                if (!done)
+                    scale_argb32(src, spitch, g_fake->w, g_fake->h,
+                                 (uint8_t *)g_stage, g_real->w * 4, g_real->w,
+                                 g_real->h, !g_fake_hw);
+                g_stage_hash = hash;
+                g_stage_valid = 1;
+            }
+            else if (prof) {
+                p_skipped++;
+            }
+        }
 
         if (prof)
             t1 = now_us();

@@ -5,7 +5,7 @@ include ../common/config.mk
 CFLAGS := $(CFLAGS) -O2
 
 TARGET = playActivityUI
-LDFLAGS := $(LDFLAGS) -lSDL -lSDL_image -lSDL_ttf -lsqlite3 -lSDL_rotozoom
+LDFLAGS := $(LDFLAGS) -lSDL -lSDL_image -lSDL_ttf -lsqlite3 -lSDL_rotozoom -lmi_sys -lmi_gfx
 
 include ../common/commands.mk
 include ../common/recipes.mk

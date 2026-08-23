@@ -374,6 +374,22 @@ static void *_osd_thread(void *_)
  */
 void osd_showBar(int value, int value_max, uint32_t color)
 {
+    /* Re-read the framebuffer geometry before drawing.
+     *
+     * _print_bar() indexes g_display directly - fb_addr, width, height and the
+     * stride behind _bar_strideInPixels() - and display_init() short-circuits
+     * on init_done, so those are whatever they were when the process started.
+     * keymon starts at boot, at the panel's native mode. run_at_480p.sh then
+     * switches the framebuffer to 640x480 under a direct writer such as
+     * DinguxCommander or FFplay, and the bar was still being drawn 752 pixels
+     * wide with a 3008-byte stride into a 640x480 framebuffer.
+     *
+     * Two ioctls per volume or brightness press. display_getResolution() is
+     * deliberately not used here: it reads /tmp/screen_resolution, which holds
+     * the session's mode rather than the one currently programmed. */
+    display_refreshVinfo();
+    display_getRenderResolution();
+
     _bar_timer = getMilliseconds();
     _bar_value = value;
     _bar_max = value_max;

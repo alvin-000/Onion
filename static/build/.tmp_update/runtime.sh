@@ -16,7 +16,30 @@ export PATH="$sysdir/bin:$PATH"
 # which is intended.
 #
 # No-op on 640x480 panels - see src/libfbpin/fbpin.c.
-export LD_PRELOAD="$miyoodir/lib/libfbpin.so"
+#
+# libuiscale rides along for the same reason. An SDL app built for a 640x480
+# Miyoo still runs on a 752x560 panel without it - SDL hands it the real
+# 3008-byte stride, so its rows land correctly and it simply occupies the top
+# left corner - but the shim scales it to fill the panel instead. Exporting it
+# here means any app gets that, including ones a user installs later, with no
+# per-app wrapper to remember.
+#
+# Safe to export globally because the shim disables itself in every other case:
+#
+#   640x480 panel            /tmp/fb_target_res is absent, passes through
+#   app asks for the panel   request already matches the target, passes through
+#   run_at_480p.sh apps      that wrapper sets the target to 640x480 first, so
+#                            direct /dev/fb0 writers get the mode they expect
+#   gameSwitcher, infoPanel  never call SDL_SetVideoMode on this platform
+#   bootScreen, the OSD      (sdl_direct_fb.h builds a plain RGB surface), and
+#                            they read finfo.line_length, so they are already
+#                            correct at the panel's own resolution
+#
+# What it does not fix is a third-party app that mmaps /dev/fb0 and assumes a
+# 640-pixel stride. That garbles with or without this - there is no present to
+# hook - and needs run_at_480p.sh. Measured: the screen is unreadable while such
+# an app runs, MainUI survives, and the display repaints itself once it exits.
+export LD_PRELOAD="$miyoodir/lib/libfbpin.so:$miyoodir/lib/libuiscale.so"
 
 logfile=$(basename "$0" .sh)
 . $sysdir/script/log.sh
@@ -500,9 +523,16 @@ launch_game() {
             # rejected outright. Pinning the game path is worth doing, but it
             # needs testing against real cores first - change_resolution below
             # already restores the session mode if a game changes it.
+            #
+            # libuiscale is restored alongside it, for the same reason and with
+            # the same caveat. Without it an app built for 640x480 still runs -
+            # SDL hands it the real stride and it occupies the top left corner -
+            # but it is not scaled, so the global export in this script would
+            # reach keymon and its children while missing the one path apps are
+            # actually launched through.
             if [ $is_game -eq 0 ] && ! grep -q "libfbpin.so" $sysdir/cmd_to_run.sh; then
-                sed -i "s|LD_PRELOAD=|LD_PRELOAD=$miyoodir/lib/libfbpin.so:|" $sysdir/cmd_to_run.sh
-                log "app launch: restored libfbpin to LD_PRELOAD"
+                sed -i "s|LD_PRELOAD=|LD_PRELOAD=$miyoodir/lib/libfbpin.so:$miyoodir/lib/libuiscale.so:|" $sysdir/cmd_to_run.sh
+                log "app launch: restored libfbpin and libuiscale to LD_PRELOAD"
             fi
 
             # make the cmd_to_run shell env aware of the new timezone

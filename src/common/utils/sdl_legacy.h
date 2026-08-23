@@ -153,6 +153,8 @@ static inline void legacy_blit180(SDL_Surface *src, SDL_Surface *dst)
 //    Compiled at -O2 in the apps that use it, this is the same shape that took
 //    libuiscale from 226ms to 47ms per present.
 //
+#include "utils/gfx_present.h"
+
 #define LEGACY_FP_SHIFT 12
 #define LEGACY_FP_ONE (1 << LEGACY_FP_SHIFT)
 
@@ -371,7 +373,31 @@ static inline void legacy_present(SDL_Surface *canvas, SDL_Surface *vid)
             }
         }
 
-        _legacy_scaleRotate(src, _legacy_stage, vid->w, vid->h);
+        /* Hardware scale when the 2D engine is available, CPU otherwise. The
+           mirror above already put the frame in cached RAM; when MI_GFX is live
+           it goes into the MMA buffer instead, at the same cost, and the blit
+           replaces the bilinear loop. Rotation is unconditional here because
+           this path writes vid->pixels directly and so never gets the vendor
+           SDL's rotating blit - exactly what _legacy_scaleRotate() assumes. */
+        {
+            int done = 0;
+            if (gfxp_init(src->w, src->h, vid->w, vid->h)) {
+                int yy;
+                const int srow = src->w * 4;
+                for (yy = 0; yy < src->h; yy++)
+                    memcpy((uint8_t *)gfxp_src() + (size_t)yy * srow,
+                           (const uint8_t *)src->pixels + (size_t)yy * src->pitch,
+                           srow);
+                done = gfxp_blit(1);
+                if (done)
+                    memcpy(_legacy_stage, gfxp_dst(),
+                           (size_t)vid->w * vid->h * 4);
+                else
+                    gfxp_teardown();
+            }
+            if (!done)
+                _legacy_scaleRotate(src, _legacy_stage, vid->w, vid->h);
+        }
 
         if (SDL_MUSTLOCK(vid) && SDL_LockSurface(vid) < 0)
             return;

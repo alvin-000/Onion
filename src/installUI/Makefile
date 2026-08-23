@@ -8,7 +8,7 @@ include ../common/config.mk
 CFLAGS := $(CFLAGS) -O2
 
 TARGET = installUI
-LDFLAGS := $(LDFLAGS) -lSDL -lSDL_ttf -lSDL_image -pthread -lSDL_rotozoom
+LDFLAGS := $(LDFLAGS) -lSDL -lSDL_ttf -lSDL_image -pthread -lSDL_rotozoom -lmi_sys -lmi_gfx
 
 include ../common/commands.mk
 include ../common/recipes.mk
