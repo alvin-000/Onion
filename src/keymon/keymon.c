@@ -1078,13 +1078,11 @@ int main(void)
 
                     switch (settings.lid_close_action) {
                     case 0: // Suspend
-                        if (settings.disable_standby) {
-                            deepsleep();
-                        }
-                        else {
-                            turnOffScreen();
-                            hibernate_start = getMilliseconds();
-                        }
+                        // Independent of the power button single-press
+                        // preference (settings.disable_standby) - that
+                        // governs the button only.
+                        turnOffScreen();
+                        hibernate_start = getMilliseconds();
                         break;
                     case 1: // Shutdown
                         print_debug("Shutting down due to lid close");
