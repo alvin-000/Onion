@@ -93,8 +93,14 @@ main() {
     # Establish the session's framebuffer mode before anything draws. Must come
     # before init_system: the LCD init there is when boot-time garbling shows.
     get_screen_resolution
-    pin_ui_resolution
-    write_560p_report
+    # Only meaningful once the panel is up. On a v4 it is not: this pins against
+    # an uninitialised GOP, and init_lcd undoes it moments later. The pin in
+    # init_system() covers that case instead.
+    if panel_ready; then
+        pin_ui_resolution
+    else
+        log "main: panel not up yet, deferring the pin until after init_lcd"
+    fi
 
     init_system
     update_time
@@ -333,7 +339,6 @@ launch_main_ui() {
         ./MainUI 2>&1 > /dev/null
 
     # MainUI has exited, so the UI has been used - snapshot what libfbpin saw.
-    copy_fbpin_log
 
     # Merge the last game launched into the recent list
     check_hide_recents
@@ -1022,13 +1027,55 @@ get_screen_resolution() {
 #   No-op on 640x480 panels - the kernel already hands over that mode, so there
 #   is nothing to set and nothing to defend.
 #
+# Put the backlight down. Used where a visible transition is coming and the
+# caller will light the panel itself afterwards.
+backlight_off() {
+    # The PWM is not necessarily exported yet, and where it is not every attempt
+    # to blank silently does nothing - the guard below fails soft. Measured
+    # across a Mini v4 boot, the enable and duty_cycle nodes do not exist at all
+    # until init_system exports them, a second after the transition this is
+    # meant to cover:
+    #
+    #     2.49  bl=/      (no such file)   752x560, three buffers
+    #     3.73  bl=/      (no such file)   640x480
+    #     3.91  bl=/      (no such file)   752x560
+    #     5.05  bl=1/35   exported at last
+    #
+    # A Flip's firmware exports it before Onion runs (bl=1/40 on its first
+    # sample), which is why this went unnoticed. Export it here so there is
+    # something to write to; init_system's own export later is then a harmless
+    # no-op on an already-exported channel.
+    if [ ! -e /sys/class/pwm/pwmchip0/pwm0/enable ]; then
+        echo 0 > /sys/class/pwm/pwmchip0/export 2> /dev/null
+    fi
+
+    _blf=/sys/class/pwm/pwmchip0/pwm0/duty_cycle
+    if [ -w "$_blf" ]; then
+        echo 0 > "$_blf" 2> /dev/null
+        # duty=0 can leave the panel faintly lit; disabling the PWM is how
+        # Onion itself blanks (bin/adv/advexec.sh).
+        echo 0 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
+}
+
+# Whether the panel has actually been brought up yet.
+#
+# Before init_lcd runs, a Mini v4 reports no timing line, and an uninitialised
+# GOP default through xres= - read as 1920x1080 by libfbpin and as 752x560 by
+# the shell moments later, from the same file. Nothing read in that window can
+# be trusted. Once the panel is up both devices report the timing line, so this
+# is the signal that a probe is worth anything at all.
+#
+# Note this contradicts the premise of the commit that added the xres= fallback,
+# which took a v4 to print no timing line ever; the dump behind that was
+# captured before init_lcd. Worth revisiting that fallback separately.
+panel_ready() {
+    grep -q "Current TimingWidth=" /proc/mi_modules/fb/mi_fb0 2> /dev/null
+}
+
 pin_ui_resolution() {
     res_x=$(echo "$ui_resolution" | cut -d 'x' -f 1)
     res_y=$(echo "$ui_resolution" | cut -d 'x' -f 2)
-
-    # Recorded for write_560p_report, which runs after this returns.
-    pin_before=$(cat /sys/class/graphics/fb0/virtual_size 2> /dev/null)
-    pin_reverted=0
 
     # libfbpin reads this and rewrites any mode set that disagrees with it.
     echo -n "$ui_resolution" > /tmp/fb_target_res
@@ -1092,7 +1139,6 @@ pin_ui_resolution() {
     pin_readback=$(read_fb_mode)
     if [ "$pin_readback" != "$ui_resolution" ]; then
         log "pin_ui_resolution: FAILED - wanted $ui_resolution, got '$pin_readback'; reverting to 640x480"
-        pin_reverted=1
         touch /tmp/pin_560p_failed
         fbset -g 640 480 640 960 32
         res_x=640
@@ -1111,98 +1157,16 @@ pin_ui_resolution() {
     # Let the scaler settle before the panel is lit again.
     usleep 400000
 
-    if [ -n "$_bl_prev" ]; then
+    # "keep_dark" means the caller lights the panel itself afterwards. Restoring
+    # here would raise the backlight immediately after a mode change, before the
+    # scaler has settled, and init_system() would then set brightness and enable
+    # it again - an off/on/on cycle on top of the transition this is hiding.
+    if [ -n "$_bl_prev" ] && [ "$1" != "keep_dark" ]; then
         echo "$_bl_prev" > "$_bl" 2> /dev/null
         echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
     fi
 }
 
-#
-#   Write a panel/firmware report to the root of the SD card.
-#
-#   Exists because the Mini v4 is unverified and we have no v4 in-house: it
-#   reports 480p panels and 560p panels alike as DEVICE_ID 283, and we do not
-#   yet know whether its panel probe advertises 752x560, whether its firmware
-#   is readable through fw_printenv, or whether libfbpin will agree to pin. A
-#   tester boots this build and sends back one file that answers all three.
-#
-#   Deliberately not behind $sysdir/config/.logging - a tester should not have
-#   to enable logging first - and deliberately at the top level of the card
-#   rather than in $sysdir/logs, so it can be found without instructions.
-#   Appends, so repeated boots accumulate rather than overwrite the one boot
-#   that is being asked about.
-#
-#   Kept for the confirmation round on a Mini v4; remove it, and the
-#   .fbpin_debug flag shipped beside it, before general release.
-#
-report_560p=/mnt/SDCARD/560p_report.txt
-
-write_560p_report() {
-    {
-        echo "==============================================================="
-        echo "Onion 560p report - $(date +"%Y-%m-%d %H:%M:%S")"
-        echo "Onion version: $(cat $sysdir/onionVersion/version.txt 2> /dev/null) $(cat $sysdir/onionVersion/variant.txt 2> /dev/null)"
-        echo "==============================================================="
-
-        echo
-        echo "--- model ---"
-        echo "/tmp/deviceModel: $(cat /tmp/deviceModel 2> /dev/null)"
-        echo "hall sensor node: $([ -e /sys/devices/soc0/soc/soc:hall-mh248/hallvalue ] && echo present || echo absent)"
-        echo "/dev/input/event1: $([ -e /dev/input/event1 ] && echo present || echo absent)"
-        echo "axp probe: $(axp 0 > /dev/null 2>&1 && echo ok || echo "failed (no PMU)")"
-
-        echo
-        echo "--- firmware ---"
-        echo "/etc/fw_printenv: $([ -x /etc/fw_printenv ] && echo executable || echo "MISSING or not executable")"
-        echo "raw output: [$(/etc/fw_printenv miyoo_version 2>&1)]"
-        echo "exit status: $(/etc/fw_printenv miyoo_version > /dev/null 2>&1; echo $?)"
-        echo "parsed value: [$(/etc/fw_printenv miyoo_version 2> /dev/null | cut -d'=' -f2)]"
-        echo "gate is >= 202310271401"
-
-        echo
-        echo "--- panel probe ---"
-        echo "grep result the gate sees: [$(grep 'Current TimingWidth=' /proc/mi_modules/fb/mi_fb0 2>&1 | sed 's/Current TimingWidth=\([0-9]*\),TimingWidth=\([0-9]*\),.*/\1x\2/')]"
-        echo "probe timed out: $([ -f /tmp/get_screen_resolution_failed ] && echo YES || echo no)"
-        echo "/proc/mi_modules/fb/mi_fb0:"
-        cat /proc/mi_modules/fb/mi_fb0 2>&1 | sed 's/^/  | /'
-
-        echo
-        echo "--- decision ---"
-        echo "panel reports:    [$p560_probed]"
-        echo "framebuffer mode: [$(read_fb_mode)]"
-        echo "verdict: $([ -f /tmp/new_res_available ] && echo 560p || echo 480p) - $p560_reason"
-
-        echo
-        echo "--- framebuffer ---"
-        echo "virtual_size before pin: [$pin_before]"
-        echo "virtual_size after pin:  [$(cat /sys/class/graphics/fb0/virtual_size 2> /dev/null)]"
-        echo "read-back reverted the pin: $([ "$pin_reverted" = "1" ] && echo YES || echo no)"
-        echo "fbset -i:"
-        fbset -i 2>&1 | sed 's/^/  | /'
-
-        echo
-        echo "--- resulting flags ---"
-        echo "/tmp/screen_resolution: [$(cat /tmp/screen_resolution 2> /dev/null)]"
-        echo "/tmp/fb_target_res:     [$(cat /tmp/fb_target_res 2> /dev/null)]"
-        echo "/tmp/new_res_available: $([ -f /tmp/new_res_available ] && echo present || echo absent)"
-        echo
-    } >> "$report_560p" 2>&1
-
-    sync
-}
-
-#
-#   libfbpin appends to /tmp/fbpin.log whenever /mnt/SDCARD/.fbpin_debug
-#   exists, recording every mode set it saw and whether it rewrote it. That is
-#   the direct evidence for whether libfbpin agrees the panel scales, so copy
-#   it somewhere the tester can reach. Runs late, once apps have started.
-#
-copy_fbpin_log() {
-    if [ -f /tmp/fbpin.log ]; then
-        cp -f /tmp/fbpin.log /mnt/SDCARD/560p_fbpin.log 2> /dev/null
-        sync
-    fi
-}
 
 mute_theme_bgm() {
     system_theme="$(/customer/app/jsonval theme)"
@@ -1238,8 +1202,40 @@ init_system() {
     load_settings
 
     # init_lcd
+    #
+    # Where the panel is not up yet, this is what brings it up - and doing so
+    # resets the framebuffer. Measured on a Mini v4 at 20ms resolution: 752x560
+    # with three buffers before, 640x480 immediately after, 752x560 again once
+    # the pin below runs. Two GOP scaler reconfigurations, and the firmware has
+    # the panel lit throughout, so they are visible.
+    #
+    # Blanking here and staying down means that sequence happens dark, and the
+    # backlight setup further down this function becomes the single thing that
+    # lights the panel, on a settled image.
+    #
+    # Only where it is needed: a Flip reports its panel before Onion starts and
+    # this does not disturb its framebuffer, so there is nothing to cover.
+    if ! panel_ready; then
+        log "init_system: panel not up yet, blanking across init_lcd"
+        backlight_off
+    fi
+
     cat /proc/ls
     sleep 0.25
+
+    # Pin now that the panel is actually up. On a Flip this is a no-op: the pin
+    # in main() already stuck, and pin_ui_resolution() returns early when the
+    # framebuffer holds the target mode. init_lcd is asynchronous, so wait for
+    # the panel to report itself first - bounded, so a device that never does is
+    # no worse off than before.
+    _wait=0
+    while ! panel_ready && [ $_wait -lt 20 ]; do
+        usleep 50000
+        _wait=$((_wait + 1))
+    done
+
+    get_screen_resolution
+    pin_ui_resolution keep_dark
 
     # setup loopback interface for RetroArch CMDs
     ip addr add 127.0.0.1/8 dev lo
