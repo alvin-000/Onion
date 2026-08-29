@@ -1,7 +1,7 @@
 ###########################################################
 
 TARGET=Onion
-VERSION=4.5.0-beta-20260823
+VERSION=4.5.0-beta-20260825
 RA_SUBVERSION=1.22.2
 
 ###########################################################
@@ -59,7 +59,13 @@ include ./src/common/commands.mk
 
 ###########################################################
 
-.PHONY: all version core apps external release clean deepclean git-clean with-toolchain patch lib test
+# `build` and `dist` MUST be here. Directories named build/ and dist/ exist, so
+# without this make treats those targets as files and compares timestamps - and
+# because every write lands in a SUBdirectory, the top-level mtimes barely move.
+# Make then decides dist/ is up to date, silently skips packaging, and `release`
+# zips whatever the previous build left behind. That produced a correctly named
+# 466MB package containing none of the changes, with make exiting 0.
+.PHONY: all version core apps external build dist release sync-static clean deepclean git-clean with-toolchain patch lib test
 
 all: dist
 
@@ -121,7 +127,20 @@ $(CACHE)/.setup:
 build: core apps external
 	@$(ECHO) $(PRINT_DONE)
 
-core: $(CACHE)/.setup
+# Re-copying static/ is cheap (rsync only moves what changed) and static/ is
+# where most work in this repo lands - shell scripts, MainUI blobs, res files.
+# Leaving it behind the one-shot .setup stamp meant an incremental build
+# packaged the PREVIOUS run's scripts with no indication anything was wrong.
+.PHONY: sync-static
+sync-static: $(CACHE)/.setup
+	@rsync -a --exclude='.gitkeep' $(STATIC_BUILD)/ $(BUILD_DIR)
+	@rsync -a --exclude='.gitkeep' $(STATIC_DIST)/ $(DIST_DIR)
+	@mkdir -p $(BUILD_DIR)/.tmp_update/onionVersion
+	@echo -n "v$(VERSION)" > $(BUILD_DIR)/.tmp_update/onionVersion/version.txt
+	@echo -n "$(OPT_LABEL)" > $(BUILD_DIR)/.tmp_update/onionVersion/variant.txt
+	@sed -i "s/{VERSION}/$(VERSION)/g" $(BUILD_DIR)/autorun.inf
+
+core: sync-static
 	@$(ECHO) $(PRINT_RECIPE)
 # Build Onion binaries
 	@cd $(SRC_DIR)/bootScreen && BUILD_DIR=$(BIN_DIR) make
@@ -172,7 +191,7 @@ core: $(CACHE)/.setup
 	@cp $(BIN_DIR)/libfbpin.so $(BUILD_DIR)/miyoo/lib/
 	@cp $(BIN_DIR)/libuiscale.so $(BUILD_DIR)/miyoo/lib/
 
-apps: $(CACHE)/.setup
+apps: sync-static
 	@$(ECHO) $(PRINT_RECIPE)
 	@cd $(SRC_DIR)/batteryMonitorUI && BUILD_DIR="$(PACKAGES_APP_DEST)/Battery Monitor/App/BatteryMonitorUI" make
 	@find $(SRC_DIR)/batteryMonitorUI -depth -type d -name res -exec cp -r {}/. "$(PACKAGES_APP_DEST)/Battery Monitor/App/BatteryMonitorUI/res/" \;
@@ -194,7 +213,7 @@ $(THIRD_PARTY_DIR)/RetroArch-patch/bin/retroarch_miyoo354:
 	@$(ECHO) $(COLOR_BLUE)"\n-- Build RetroArch"$(COLOR_NORMAL)
 	@cd $(THIRD_PARTY_DIR)/RetroArch-patch && make
 
-external: $(CACHE)/.setup $(THIRD_PARTY_DIR)/RetroArch-patch/bin/retroarch_miyoo354
+external: sync-static $(THIRD_PARTY_DIR)/RetroArch-patch/bin/retroarch_miyoo354
 	@$(ECHO) $(PRINT_RECIPE)
 # Add RetroArch
 	@cp $(THIRD_PARTY_DIR)/RetroArch-patch/bin/* $(BUILD_DIR)/RetroArch/
@@ -226,17 +245,27 @@ external: $(CACHE)/.setup $(THIRD_PARTY_DIR)/RetroArch-patch/bin/retroarch_miyoo
 	@$(ECHO) $(COLOR_BLUE)"\n-- Build DinguxCommander"$(COLOR_NORMAL)
 	@cd $(THIRD_PARTY_DIR)/DinguxCommander && make && cp ./output/DinguxCommander "$(PACKAGES_APP_DEST)/File Explorer (DinguxCommander)/App/Commander_Italic"
 
+# `7z a` updates an existing archive in place: changed files are replaced, but
+# files deleted from the source stay in the archive forever. Remove each one
+# first so a package can never carry something the tree no longer has.
+#
+# This is hygiene, not the reason a stale package once shipped - that was the
+# missing .PHONY above, which skipped this whole recipe.
 dist: build
 	@$(ECHO) $(PRINT_RECIPE)
 # Package configs
 	@cp -R $(TEMP_DIR)/configs/Saves/CurrentProfile/ $(TEMP_DIR)/configs/Saves/GuestProfile
 	@echo -n "Packaging configs..."
+	@rm -f $(BUILD_DIR)/.tmp_update/config/configs.pak
 	@cd $(TEMP_DIR)/configs && 7z a -mtm=off $(BUILD_DIR)/.tmp_update/config/configs.pak . -bsp1 -bso0
 	@echo " DONE"
-	@rm -rf $(TEMP_DIR)/configs
-	@rmdir $(TEMP_DIR)
+# The staged configs are deliberately NOT deleted here. They are created by
+# $(CACHE)/.setup, which is stamped and does not re-run, so removing them made
+# `dist` destroy its own inputs and fail on every subsequent run. `clean`
+# already removes $(TEMP_DIR)/configs.
 # Package RetroArch separately
 	@echo -n "Packaging RetroArch..."
+	@rm -f $(BUILD_DIR)/retroarch.pak $(DIST_DIR)/RetroArch/retroarch.pak
 	@cd $(BUILD_DIR) && 7z a -mtm=off retroarch.pak ./RetroArch -bsp1 -bso0
 	@echo " DONE"
 	@mkdir -p $(DIST_DIR)/RetroArch
@@ -244,12 +273,20 @@ dist: build
 	@echo $(RA_SUBVERSION) > $(DIST_DIR)/RetroArch/ra_package_version.txt
 # Package Onion core
 	@echo -n "Packaging Onion..."
+	@rm -f $(DIST_DIR)/miyoo/app/.tmp_update/onion.pak
 	@cd $(BUILD_DIR) && 7z a -mtm=off $(DIST_DIR)/miyoo/app/.tmp_update/onion.pak . -x!RetroArch -bsp1 -bso0
 	@echo " DONE"
 	@$(ECHO) $(PRINT_DONE)
 
 release: dist
 	@$(ECHO) $(PRINT_RECIPE)
+# Keep the release folder to the version being built, so an old zip cannot be
+# picked up and handed to a tester by mistake. The O0 and O2 packages of the
+# SAME version are deliberately spared: the two are built from separate
+# branches into this one folder and are shipped as a pair, so purging by name
+# alone would mean building one variant destroyed the other.
+	@find $(RELEASE_DIR) -maxdepth 1 -type f -name '$(TARGET)-v*.zip' \
+		! -name '$(TARGET)-v$(VERSION)-*.zip' -print -delete
 	@rm -f $(RELEASE_DIR)/$(RELEASE_NAME).zip
 	@cd $(DIST_DIR) && 7z a -mtc=off $(RELEASE_DIR)/$(RELEASE_NAME).zip . -bsp1 -bso0
 	@$(ECHO) $(PRINT_DONE)

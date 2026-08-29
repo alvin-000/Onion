@@ -84,6 +84,7 @@ main() {
     # before init_system: the LCD init there is when boot-time garbling shows.
     get_screen_resolution
     pin_ui_resolution
+    write_560p_report
 
     init_system
     update_time
@@ -161,11 +162,26 @@ main() {
         rm -f "$sysdir/cmd_to_run.sh" 2> /dev/null
     fi
 
-    if [ $DEVICE_ID -eq $MODEL_MMF ] || [ $DEVICE_ID -eq $MODEL_MMP ]; then
-        if [ -f /mnt/SDCARD/RetroArch/retroarch_miyoo354 ]; then
-            # Mount miyoo354 RA version
-            mount -o bind /mnt/SDCARD/RetroArch/retroarch_miyoo354 /mnt/SDCARD/RetroArch/retroarch
-        fi
+    # RetroArch ships as two builds that differ in exactly one thing:
+    # retroarch_miyoo354 has RetroAchievements compiled in, plain retroarch
+    # does not. Everything else matches - same NEEDED libraries, same video,
+    # audio and input drivers, same 560p handling.
+    #
+    # Upstream mounted the achievements build on the Mini+ only, and #1860
+    # added the Flip, both being the WiFi-capable models. A Mini v4 reports
+    # DEVICE_ID 283, the same as a 480p Mini v1-v3, so no model test can single
+    # it out - and it does not need to. Selecting by model means one SD card
+    # gains and loses achievements as it is moved between devices, which is
+    # what prompted this: a card set up on a Flip, carried to a v4, silently
+    # stopped having them.
+    #
+    # A build without achievements ignores a configured account rather than
+    # failing - verified on hardware with username, password, token, hardcore
+    # and leaderboards all set: no login attempt, no crash, core loaded
+    # normally. So mounting the achievements build everywhere is safe, and
+    # costs a device that cannot use it nothing but ~185KB of inert code.
+    if [ -f /mnt/SDCARD/RetroArch/retroarch_miyoo354 ]; then
+        mount -o bind /mnt/SDCARD/RetroArch/retroarch_miyoo354 /mnt/SDCARD/RetroArch/retroarch
     fi
 
     # Bind arcade name library to customer path
@@ -305,6 +321,9 @@ launch_main_ui() {
         LD_LIBRARY_PATH="$miyoodir/lib:/config/lib:/lib" \
         LD_PRELOAD="$miyoodir/lib/libfbpin.so:$miyoodir/lib/libuiscale.so:$miyoodir/lib/libpadsp.so" \
         ./MainUI 2>&1 > /dev/null
+
+    # MainUI has exited, so the UI has been used - snapshot what libfbpin saw.
+    copy_fbpin_log
 
     # Merge the last game launched into the recent list
     check_hide_recents
@@ -827,6 +846,105 @@ mount_main_ui() {
 }
 
 #
+#   The panel's native mode, as "WxH", or empty if it cannot be read.
+#
+#   Two firmware families describe the panel differently, and the difference
+#   is not cosmetic:
+#
+#     Flip     "Current TimingWidth=752,TimingWidth=560,..." - the panel's own
+#              timing, which is what we want, and which is NOT the framebuffer's
+#              current mode: a Flip boots at 640x480 and is pinned to 752x560
+#              afterwards.
+#
+#     Mini v4  has no such line at all. It reports the framebuffer geometry as
+#              "xres=752, yres=560" - and on a v4 that already is the panel's
+#              native mode at boot, so it is the right answer there.
+#
+#   Order matters. The timing line wins wherever it exists, because on a Flip
+#   the xres/yres pair is the unpinned 640x480 mode and would be the wrong
+#   answer. Only when the timing line is absent do we fall back to xres/yres.
+#
+#   A Mini v4 falling through to the fallback is exactly why Onion used to lock
+#   it to 480p: the old probe looked for the timing line only, found nothing,
+#   spent five seconds retrying, and gave up on 640x480 while the panel sat
+#   there at its native 752x560.
+#
+read_panel_mode() {
+    # sed -n ... p rather than grep | sed: a non-matching line must produce
+    # nothing, not pass through unmodified. The upstream expression also
+    # required a comma after the second value - real hardware prints
+    # "...,TimingWidth=560,hstar=192" so it matched, but a firmware ending the
+    # line there would have leaked the raw text through as the "resolution".
+    _pm=$(sed -n 's/.*Current TimingWidth=\([0-9][0-9]*\),TimingWidth=\([0-9][0-9]*\).*/\1x\2/p' \
+        /proc/mi_modules/fb/mi_fb0 2> /dev/null | tr -d '\r' | head -n 1)
+
+    if [ -n "$_pm" ]; then
+        echo "$_pm"
+        return
+    fi
+
+    # "xres=752, yres=560". Anchored so xres_virtual/yres_virtual cannot match,
+    # and tolerant of stray carriage returns.
+    sed -n 's/^[[:space:]]*xres=\([0-9][0-9]*\),[[:space:]]*yres=\([0-9][0-9]*\).*/\1x\2/p' \
+        /proc/mi_modules/fb/mi_fb0 2> /dev/null | tr -d '\r' | head -n 1
+}
+
+#
+#   The framebuffer's CURRENT mode, as "WxH". Always the xres/yres pair - on a
+#   Flip this is 640x480 before pinning, on a Mini v4 it is already 752x560.
+#   Used to decide whether pinning has anything left to do.
+#
+read_fb_mode() {
+    sed -n 's/^[[:space:]]*xres=\([0-9][0-9]*\),[[:space:]]*yres=\([0-9][0-9]*\).*/\1x\2/p' \
+        /proc/mi_modules/fb/mi_fb0 2> /dev/null | tr -d '\r' | head -n 1
+}
+
+#
+#   Is this panel 752x560?
+#
+#   Purely a property of the panel and the firmware - no model check. The Mini
+#   v4 reports DEVICE_ID 283, the same as the 480p Mini v1-v3, so the model
+#   could never have separated them; read_panel_mode() identifies the panel
+#   directly instead, which is both correct and safe on every device.
+#
+#   Takes the probed mode as $1. Fails closed: an unreadable firmware version
+#   means 640x480.
+#
+panel_is_560p() {
+    p560_reason=""
+
+    # get_screen_resolution() runs twice - once before pinning and again from
+    # init_system() - so a pin that failed its read-back has to stay failed,
+    # or the second pass would re-enable 560p behind the revert's back. In
+    # /tmp, so it lasts the session and no longer.
+    if [ -f /tmp/pin_560p_failed ]; then
+        p560_reason="an earlier pin attempt failed; holding 640x480 this session"
+        return 1
+    fi
+
+    if [ "$1" != "752x560" ]; then
+        p560_reason="panel reports '$1', not 752x560"
+        return 1
+    fi
+
+    p560_fw=$(/etc/fw_printenv miyoo_version 2> /dev/null | cut -d'=' -f2 | tr -d '\r')
+    case "$p560_fw" in
+    '' | *[!0-9]*)
+        p560_reason="752x560 panel but firmware unreadable ('$p560_fw')"
+        return 1
+        ;;
+    esac
+
+    if [ "$p560_fw" -lt 202310271401 ] 2> /dev/null; then
+        p560_reason="752x560 panel but firmware $p560_fw is older than 202310271401"
+        return 1
+    fi
+
+    p560_reason="752x560 panel on firmware $p560_fw"
+    return 0
+}
+
+#
 #   attempts to retrieve the physical screen resolution from mi_fb module
 #   resolution is stored in /tmp/screen_resolution
 #   times out after 5 seconds, defaults to 640x480
@@ -837,7 +955,7 @@ get_screen_resolution() {
 
     log "get_screen_resolution: start"
     while [ "$attempt" -lt "$max_attempts" ]; do
-        screen_resolution=$(grep 'Current TimingWidth=' /proc/mi_modules/fb/mi_fb0 | sed 's/Current TimingWidth=\([0-9]*\),TimingWidth=\([0-9]*\),.*/\1x\2/')
+        screen_resolution=$(read_panel_mode)
         if [ -n "$screen_resolution" ]; then
             log "get_screen_resolution: success, resolution: $screen_resolution"
             break
@@ -852,12 +970,17 @@ get_screen_resolution() {
         touch /tmp/get_screen_resolution_failed
     fi
 
-    if [ "$screen_resolution" = "752x560" ] && [ "$(/etc/fw_printenv miyoo_version | cut -d'=' -f2)" -ge "202310271401" ]; then
+    # Records the probe result before the gate rewrites it, for the report.
+    p560_probed="$screen_resolution"
+
+    if panel_is_560p "$screen_resolution"; then
         touch /tmp/new_res_available
+        screen_resolution="752x560"
     else
         # can't use 752x560 without appropriate firmware or screen
         screen_resolution="640x480"
     fi
+    log "get_screen_resolution: probed '$p560_probed' -> $screen_resolution ($p560_reason)"
 
     echo -n "$screen_resolution" > /tmp/screen_resolution
 
@@ -893,6 +1016,10 @@ pin_ui_resolution() {
     res_x=$(echo "$ui_resolution" | cut -d 'x' -f 1)
     res_y=$(echo "$ui_resolution" | cut -d 'x' -f 2)
 
+    # Recorded for write_560p_report, which runs after this returns.
+    pin_before=$(cat /sys/class/graphics/fb0/virtual_size 2> /dev/null)
+    pin_reverted=0
+
     # libfbpin reads this and rewrites any mode set that disagrees with it.
     echo -n "$ui_resolution" > /tmp/fb_target_res
 
@@ -907,6 +1034,17 @@ pin_ui_resolution() {
     # anything, so the two agree on which devices are left alone.
     if [ "$res_x" = "640" ] && [ "$res_y" = "480" ]; then
         log "pin_ui_resolution: 640x480 panel, nothing to pin"
+        return
+    fi
+
+    # A Mini v4 boots with the framebuffer already at its native 752x560 and
+    # three buffers (yres_virtual 1680). There is nothing to pin, and running
+    # fbset anyway would set yres_virtual to 1120 and cost it a buffer - the
+    # same regression the 640x480 short-circuit above exists to avoid. Compare
+    # the mode itself rather than virtual_size, so any buffer count is left
+    # alone.
+    if [ "$(read_fb_mode)" = "$ui_resolution" ]; then
+        log "pin_ui_resolution: framebuffer is already $ui_resolution, nothing to pin"
         return
     fi
 
@@ -933,6 +1071,29 @@ pin_ui_resolution() {
 
     fbset -g "$res_x" "$res_y" "$res_x" "$((res_y * 2))" 32
 
+    # Confirm the mode actually took before anything renders into it. A panel
+    # that cannot do 752x560 must fall back to 640x480 rather than be left
+    # displaying garbage - this is the safety net for the Mini v4 path, which
+    # qualifies on model+firmware rather than on a probe of the panel itself.
+    # Checked while the backlight is still down, so a revert is never seen.
+    # Ask the driver what mode it is actually in. virtual_size is the wrong
+    # question: the driver is free to keep three buffers, so yres_virtual may
+    # legitimately not be res_y * 2.
+    pin_readback=$(read_fb_mode)
+    if [ "$pin_readback" != "$ui_resolution" ]; then
+        log "pin_ui_resolution: FAILED - wanted $ui_resolution, got '$pin_readback'; reverting to 640x480"
+        pin_reverted=1
+        touch /tmp/pin_560p_failed
+        fbset -g 640 480 640 960 32
+        res_x=640
+        res_y=480
+        ui_resolution="640x480"
+        screen_resolution="640x480"
+        echo -n "640x480" > /tmp/fb_target_res
+        echo -n "640x480" > /tmp/screen_resolution
+        rm -f /tmp/new_res_available
+    fi
+
     # Zero the aperture so the region that becomes visible when the mode grows
     # is black rather than stale content read at the new stride.
     cat /dev/zero > /dev/fb0 2> /dev/null
@@ -943,6 +1104,93 @@ pin_ui_resolution() {
     if [ -n "$_bl_prev" ]; then
         echo "$_bl_prev" > "$_bl" 2> /dev/null
         echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable 2> /dev/null
+    fi
+}
+
+#
+#   Write a panel/firmware report to the root of the SD card.
+#
+#   Exists because the Mini v4 is unverified and we have no v4 in-house: it
+#   reports 480p panels and 560p panels alike as DEVICE_ID 283, and we do not
+#   yet know whether its panel probe advertises 752x560, whether its firmware
+#   is readable through fw_printenv, or whether libfbpin will agree to pin. A
+#   tester boots this build and sends back one file that answers all three.
+#
+#   Deliberately not behind $sysdir/config/.logging - a tester should not have
+#   to enable logging first - and deliberately at the top level of the card
+#   rather than in $sysdir/logs, so it can be found without instructions.
+#   Appends, so repeated boots accumulate rather than overwrite the one boot
+#   that is being asked about.
+#
+#   Kept for the confirmation round on a Mini v4; remove it, and the
+#   .fbpin_debug flag shipped beside it, before general release.
+#
+report_560p=/mnt/SDCARD/560p_report.txt
+
+write_560p_report() {
+    {
+        echo "==============================================================="
+        echo "Onion 560p report - $(date +"%Y-%m-%d %H:%M:%S")"
+        echo "Onion version: $(cat $sysdir/onionVersion/version.txt 2> /dev/null) $(cat $sysdir/onionVersion/variant.txt 2> /dev/null)"
+        echo "==============================================================="
+
+        echo
+        echo "--- model ---"
+        echo "/tmp/deviceModel: $(cat /tmp/deviceModel 2> /dev/null)"
+        echo "hall sensor node: $([ -e /sys/devices/soc0/soc/soc:hall-mh248/hallvalue ] && echo present || echo absent)"
+        echo "/dev/input/event1: $([ -e /dev/input/event1 ] && echo present || echo absent)"
+        echo "axp probe: $(axp 0 > /dev/null 2>&1 && echo ok || echo "failed (no PMU)")"
+
+        echo
+        echo "--- firmware ---"
+        echo "/etc/fw_printenv: $([ -x /etc/fw_printenv ] && echo executable || echo "MISSING or not executable")"
+        echo "raw output: [$(/etc/fw_printenv miyoo_version 2>&1)]"
+        echo "exit status: $(/etc/fw_printenv miyoo_version > /dev/null 2>&1; echo $?)"
+        echo "parsed value: [$(/etc/fw_printenv miyoo_version 2> /dev/null | cut -d'=' -f2)]"
+        echo "gate is >= 202310271401"
+
+        echo
+        echo "--- panel probe ---"
+        echo "grep result the gate sees: [$(grep 'Current TimingWidth=' /proc/mi_modules/fb/mi_fb0 2>&1 | sed 's/Current TimingWidth=\([0-9]*\),TimingWidth=\([0-9]*\),.*/\1x\2/')]"
+        echo "probe timed out: $([ -f /tmp/get_screen_resolution_failed ] && echo YES || echo no)"
+        echo "/proc/mi_modules/fb/mi_fb0:"
+        cat /proc/mi_modules/fb/mi_fb0 2>&1 | sed 's/^/  | /'
+
+        echo
+        echo "--- decision ---"
+        echo "panel reports:    [$p560_probed]"
+        echo "framebuffer mode: [$(read_fb_mode)]"
+        echo "verdict: $([ -f /tmp/new_res_available ] && echo 560p || echo 480p) - $p560_reason"
+
+        echo
+        echo "--- framebuffer ---"
+        echo "virtual_size before pin: [$pin_before]"
+        echo "virtual_size after pin:  [$(cat /sys/class/graphics/fb0/virtual_size 2> /dev/null)]"
+        echo "read-back reverted the pin: $([ "$pin_reverted" = "1" ] && echo YES || echo no)"
+        echo "fbset -i:"
+        fbset -i 2>&1 | sed 's/^/  | /'
+
+        echo
+        echo "--- resulting flags ---"
+        echo "/tmp/screen_resolution: [$(cat /tmp/screen_resolution 2> /dev/null)]"
+        echo "/tmp/fb_target_res:     [$(cat /tmp/fb_target_res 2> /dev/null)]"
+        echo "/tmp/new_res_available: $([ -f /tmp/new_res_available ] && echo present || echo absent)"
+        echo
+    } >> "$report_560p" 2>&1
+
+    sync
+}
+
+#
+#   libfbpin appends to /tmp/fbpin.log whenever /mnt/SDCARD/.fbpin_debug
+#   exists, recording every mode set it saw and whether it rewrote it. That is
+#   the direct evidence for whether libfbpin agrees the panel scales, so copy
+#   it somewhere the tester can reach. Runs late, once apps have started.
+#
+copy_fbpin_log() {
+    if [ -f /tmp/fbpin.log ]; then
+        cp -f /tmp/fbpin.log /mnt/SDCARD/560p_fbpin.log 2> /dev/null
+        sync
     fi
 }
 

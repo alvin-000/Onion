@@ -59,10 +59,24 @@ static int panel_state = 0;
 static int panel_w = 0;
 static int panel_h = 0;
 
+/* Two firmware families describe the panel differently, and this must agree
+   with read_panel_mode() in runtime.sh or the shell and the interposer will
+   disagree about which devices scale.
+
+     Flip     "Current TimingWidth=752,TimingWidth=560,..." - the panel timing,
+              which is not the framebuffer's current mode (640x480 until Onion
+              pins it). Always preferred where present.
+
+     Mini v4  no timing line at all; "xres=752, yres=560" is both the current
+              mode and the panel's native one.
+
+   Taking xres/yres first would be wrong on a Flip - it would read 640x480 and
+   conclude the panel does not scale. */
 static int panel_native(int *w, int *h)
 {
     if (panel_state == 0) {
         FILE *f = fopen(FB_PROC, "r");
+        int fb_w = 0, fb_h = 0;
         panel_state = -1;
         if (f) {
             char line[256];
@@ -74,8 +88,22 @@ static int panel_native(int *w, int *h)
                     panel_state = 1;
                     break;
                 }
+                /* "xres_virtual=" does not contain "xres=", so this cannot
+                   pick up the virtual geometry by mistake. Remembered rather
+                   than used immediately, in case a timing line follows. */
+                if (fb_w == 0) {
+                    p = strstr(line, "xres=");
+                    if (p && sscanf(p, "xres=%d, yres=%d", &fb_w, &fb_h) != 2)
+                        fb_w = 0;
+                }
             }
             fclose(f);
+        }
+
+        if (panel_state != 1 && fb_w > 0 && fb_h > 0) {
+            panel_w = fb_w;
+            panel_h = fb_h;
+            panel_state = 1;
         }
     }
 

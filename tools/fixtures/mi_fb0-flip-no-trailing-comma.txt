@@ -1,0 +1,32 @@
+############################OnDumpOSDAttr####################################
+Framebuffer id = MStar FB0 
+xres=640, yres=480
+xres_virtual=640, yres_virtual=1440
+xoffset=0,yoffset=560
+fix.line_length=0xbc0 Bytes
+fix.smem_start=0x6721000
+Memory Size=0x600000 Bytes
+Gop ID=1
+Gwin ID=0
+Open Count=7
+Visible State=1
+MIU Sel=0
+ColorSpace=RGB
+ColorFomrmat=ARGB8888
+StretchWindow Pos[0,0]
+StretchWindow Src[752,560],StretchWindow Dst[752,560]
+Gwin Pos[0,0]
+Gwin Size[752,560]
+Gwin PhyAddr=0x68bc400
+ColorKey Enable=0
+ColorKey Val=[0,0,0]
+Enable Alpha Blend=0
+Enalbe Multi Alpha=1
+Global Alpha Val=0xff
+Alpha0=0x0,Alpha1=0x0,(Only for ARGB1555)
+Support Set pixel alha val for ARGB1555=0
+GOP Hstart=192
+Current TimingWidth=752,TimingWidth=560
+##################################end#######################################
+############################OnDumpHwcursorAttr####################################
+############################OnDumpHwcursorAttr####################################

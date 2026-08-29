@@ -229,6 +229,53 @@ verify_file() {
 }
 
 #
+#   Mirrors read_panel_mode() and panel_is_560p() in runtime.sh - see the
+#   comments there. Duplicated rather than shared because the installer runs
+#   before the SD card's script directory is in play, so the two files cannot
+#   source anything in common. They must stay behaviourally identical.
+#
+read_panel_mode() {
+    # sed -n ... p rather than grep | sed: a non-matching line must produce
+    # nothing, not pass through unmodified. The upstream expression also
+    # required a comma after the second value - real hardware prints
+    # "...,TimingWidth=560,hstar=192" so it matched, but a firmware ending the
+    # line there would have leaked the raw text through as the "resolution".
+    _pm=$(sed -n 's/.*Current TimingWidth=\([0-9][0-9]*\),TimingWidth=\([0-9][0-9]*\).*/\1x\2/p' \
+        /proc/mi_modules/fb/mi_fb0 2> /dev/null | tr -d '\r' | head -n 1)
+
+    if [ -n "$_pm" ]; then
+        echo "$_pm"
+        return
+    fi
+
+    sed -n 's/^[[:space:]]*xres=\([0-9][0-9]*\),[[:space:]]*yres=\([0-9][0-9]*\).*/\1x\2/p' \
+        /proc/mi_modules/fb/mi_fb0 2> /dev/null | tr -d '\r' | head -n 1
+}
+
+read_fb_mode() {
+    sed -n 's/^[[:space:]]*xres=\([0-9][0-9]*\),[[:space:]]*yres=\([0-9][0-9]*\).*/\1x\2/p' \
+        /proc/mi_modules/fb/mi_fb0 2> /dev/null | tr -d '\r' | head -n 1
+}
+
+panel_is_560p() {
+    if [ -f /tmp/pin_560p_failed ]; then
+        return 1
+    fi
+
+    if [ "$1" != "752x560" ]; then
+        return 1
+    fi
+
+    p560_fw=$(/etc/fw_printenv miyoo_version 2> /dev/null | cut -d'=' -f2 | tr -d '\r')
+    case "$p560_fw" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+
+    [ "$p560_fw" -ge 202310271401 ] 2> /dev/null || return 1
+    return 0
+}
+
+#
 #   Pin the framebuffer to the panel's native mode for the whole installation.
 #
 #   Same property runtime.sh maintains for a normal session, and for the same
@@ -239,23 +286,18 @@ verify_file() {
 #   init. Unpinned, every one of those probes is a real mode change, which is
 #   the garbling seen as setup hands over to the tutorial.
 #
-#   The firmware gate matches get_screen_resolution() in runtime.sh exactly. If
-#   the two disagreed, the installer would pin a mode the session then changes
-#   away from, which is the one thing this whole design exists to avoid.
+#   The gate is panel_is_560p() above, which matches get_screen_resolution()
+#   in runtime.sh exactly. If the two disagreed, the installer would pin a mode
+#   the session then changes away from, which is the one thing this whole
+#   design exists to avoid.
 #
 #   No-op on 640x480 panels: they never scale, so there is nothing to protect.
 #   Fails open - if the panel cannot be identified, nothing is touched.
 #
 pin_installer_resolution() {
-    screen_resolution=$(grep 'Current TimingWidth=' /proc/mi_modules/fb/mi_fb0 2> /dev/null | sed 's/Current TimingWidth=\([0-9]*\),TimingWidth=\([0-9]*\),.*/\1x\2/')
+    screen_resolution=$(read_panel_mode)
 
-    if [ "$screen_resolution" != "752x560" ]; then
-        return
-    fi
-
-    if [ "$(/etc/fw_printenv miyoo_version 2> /dev/null | cut -d'=' -f2)" -ge "202310271401" ] 2> /dev/null; then
-        :
-    else
+    if ! panel_is_560p "$screen_resolution"; then
         return
     fi
 
@@ -265,6 +307,13 @@ pin_installer_resolution() {
     # libfbpin reads this once it exists on disk. Published before the switch so
     # a deliberate change is never mistaken for one to defend against.
     echo -n "${res_x}x${res_y}" > /tmp/fb_target_res
+
+    # A Mini v4 is already in its native mode at boot, with three buffers.
+    # Pinning would cost it one, so compare the mode, not virtual_size.
+    if [ "$(read_fb_mode)" = "${res_x}x${res_y}" ]; then
+        echo ":: Framebuffer is already ${res_x}x${res_y}"
+        return
+    fi
 
     if [ "$(cat /sys/class/graphics/fb0/virtual_size 2> /dev/null)" = "${res_x},$((res_y * 2))" ]; then
         echo ":: Framebuffer already pinned to ${res_x}x${res_y}"
