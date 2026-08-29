@@ -34,6 +34,16 @@ export PATH="$sysdir/bin:$PATH"
 #   bootScreen, the OSD      (sdl_direct_fb.h builds a plain RGB surface), and
 #                            they read finfo.line_length, so they are already
 #                            correct at the panel's own resolution
+#   an SDL2 app              nothing named SDL_SetVideoMode to capture, so the
+#                            shim never engages - see below
+#
+# That last case is why libuiscale is not linked against SDL 1.2 (see its
+# Makefile). An LD_PRELOADed object's dependencies join the global symbol scope
+# of every process, ahead of a dlopen'd library's own dependencies, so linking
+# SDL 1.2 here dragged it into SDL2 processes and hijacked the 142 symbol names
+# the two versions share - SDL_Init among them. RAOfflineProxy, a pygame app,
+# died on launch with "No available video device" until that link was dropped.
+# Anything added to this export has to be checked the same way.
 #
 # What it does not fix is a third-party app that mmaps /dev/fb0 and assumes a
 # 640-pixel stride. That garbles with or without this - there is no present to

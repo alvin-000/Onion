@@ -59,6 +59,19 @@ static int (*real_Flip)(SDL_Surface *) = NULL;
 static void (*real_UpdateRects)(SDL_Surface *, int, SDL_Rect *) = NULL;
 static SDL_Surface *(*real_GetVideoSurface)(void) = NULL;
 
+/* The scaler calls these itself rather than interposing them, but they go
+   through pointers for the same reason the Makefile does not pass -lSDL: a
+   direct call leaves an undefined SDL_* symbol that the dynamic linker will
+   happily bind to whatever SDL happens to be in the process. Resolved lazily,
+   so a process with no SDL 1.2 in it never touches them. */
+static SDL_Surface *(*real_CreateRGBSurface)(Uint32, int, int, int, Uint32, Uint32,
+                                             Uint32, Uint32) = NULL;
+static int (*real_FillRect)(SDL_Surface *, SDL_Rect *, Uint32) = NULL;
+static Uint32 (*real_MapRGB)(const SDL_PixelFormat *, Uint8, Uint8, Uint8) = NULL;
+static int (*real_LockSurface)(SDL_Surface *) = NULL;
+static void (*real_UnlockSurface)(SDL_Surface *) = NULL;
+static int (*real_UpperBlit)(SDL_Surface *, SDL_Rect *, SDL_Surface *, SDL_Rect *) = NULL;
+
 /* The surface the panel actually scans out, at its native resolution. */
 static SDL_Surface *g_real = NULL;
 /* The surface handed to the program, at the resolution it asked for. NULL when
@@ -71,14 +84,82 @@ static SDL_Surface *g_fake = NULL;
    and the scaler has to do it. */
 static int g_fake_hw = 0;
 
+/*
+ * A handle on the SDL 1.2 the program is actually using.
+ *
+ * It cannot be assumed to be in the global symbol scope. MainUI, st and the
+ * standalone emulators list libSDL-1.2 in their own DT_NEEDED, so for them it
+ * is. A pygame app does not: CPU Overclock runs on the bundled python2.7, which
+ * dlopens pygame's display.so into a *local* scope, and display.so's SDL comes
+ * with it. SDL 1.2 is then loaded in the process yet invisible to both
+ * RTLD_DEFAULT and RTLD_NEXT. Measured on a Flip from inside such a process:
+ * every real SDL_* lookup returned NULL, while SDL_SetVideoMode resolved to
+ * 0xb6f99088 - this shim's own export, which is why the hook still fired and
+ * the scaler then had nothing to call.
+ *
+ * dlopen by soname returns the copy already loaded rather than mapping a second
+ * one, so this is the same SDL instance the program is calling, with the same
+ * state. RTLD_LOCAL keeps it out of the global scope: putting SDL 1.2 there is
+ * exactly what broke SDL2 apps and why this file no longer links it.
+ *
+ * Opened on the first hook call, which can only happen in a program that calls
+ * SDL_SetVideoMode - an SDL 1.2 program. An SDL2 app never reaches this.
+ */
+static void *sdl12_handle(void)
+{
+    static void *handle = NULL;
+    static int tried = 0;
+
+    if (!tried) {
+        tried = 1;
+        handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_LOCAL);
+    }
+    return handle;
+}
+
+/* Prefer the handle, fall back to the search order. RTLD_NEXT for the entry
+   points this shim interposes, so a fallback can never find our own exports and
+   recurse; RTLD_DEFAULT for the rest, which this shim does not define. */
+static void *sym_interposed(void *sdl, const char *name)
+{
+    void *p = sdl ? dlsym(sdl, name) : NULL;
+    return p ? p : dlsym(RTLD_NEXT, name);
+}
+
+static void *sym_helper(void *sdl, const char *name)
+{
+    void *p = sdl ? dlsym(sdl, name) : NULL;
+    return p ? p : dlsym(RTLD_DEFAULT, name);
+}
+
 static void resolve_symbols(void)
 {
+    void *sdl;
+
     if (real_SetVideoMode)
         return;
-    real_SetVideoMode = dlsym(RTLD_NEXT, "SDL_SetVideoMode");
-    real_Flip = dlsym(RTLD_NEXT, "SDL_Flip");
-    real_UpdateRects = dlsym(RTLD_NEXT, "SDL_UpdateRects");
-    real_GetVideoSurface = dlsym(RTLD_NEXT, "SDL_GetVideoSurface");
+
+    sdl = sdl12_handle();
+
+    real_SetVideoMode = sym_interposed(sdl, "SDL_SetVideoMode");
+    real_Flip = sym_interposed(sdl, "SDL_Flip");
+    real_UpdateRects = sym_interposed(sdl, "SDL_UpdateRects");
+    real_GetVideoSurface = sym_interposed(sdl, "SDL_GetVideoSurface");
+
+    real_CreateRGBSurface = sym_helper(sdl, "SDL_CreateRGBSurface");
+    real_FillRect = sym_helper(sdl, "SDL_FillRect");
+    real_MapRGB = sym_helper(sdl, "SDL_MapRGB");
+    real_LockSurface = sym_helper(sdl, "SDL_LockSurface");
+    real_UnlockSurface = sym_helper(sdl, "SDL_UnlockSurface");
+    real_UpperBlit = sym_helper(sdl, "SDL_UpperBlit");
+}
+
+/* Whether every helper above resolved. Checked once, where scaling is set up;
+   past that point the scaler can call them unguarded. */
+static int helpers_ready(void)
+{
+    return real_CreateRGBSurface && real_FillRect && real_MapRGB &&
+           real_LockSurface && real_UnlockSurface && real_UpperBlit;
 }
 
 static int target_mode(int *w, int *h)
@@ -446,27 +527,27 @@ static void blit_upscaled(void)
         /* Should not happen - g_fake is created from g_real's own format. This
            lands unscaled and unrotated, but a wrong-looking screen beats a
            crash, and it is reached only if that invariant is already broken. */
-        SDL_BlitSurface(g_fake, NULL, g_real, NULL);
+        real_UpperBlit(g_fake, NULL, g_real, NULL);
         return;
     }
 
     /* g_fake is a hardware surface now, so its pixels are only guaranteed to be
        addressable between lock and unlock. */
-    if (SDL_MUSTLOCK(g_fake) && SDL_LockSurface(g_fake) < 0)
+    if (SDL_MUSTLOCK(g_fake) && real_LockSurface(g_fake) < 0)
         return;
 
     if (!ensure_stage(g_real->w, g_real->h)) {
         /* No staging memory: fall back to writing the framebuffer directly.
            Slow, but correct, and it keeps the menu on screen. */
-        if (SDL_MUSTLOCK(g_real) && SDL_LockSurface(g_real) >= 0) {
+        if (SDL_MUSTLOCK(g_real) && real_LockSurface(g_real) >= 0) {
             scale_argb32((const uint8_t *)g_fake->pixels, g_fake->pitch, g_fake->w,
                          g_fake->h, (uint8_t *)g_real->pixels, g_real->pitch,
                          g_real->w, g_real->h, !g_fake_hw);
             if (SDL_MUSTLOCK(g_real))
-                SDL_UnlockSurface(g_real);
+                real_UnlockSurface(g_real);
         }
         if (SDL_MUSTLOCK(g_fake))
-            SDL_UnlockSurface(g_fake);
+            real_UnlockSurface(g_fake);
         return;
     }
 
@@ -550,9 +631,9 @@ static void blit_upscaled(void)
             t1 = now_us();
 
         /* Phase 2: one linear ascending copy per row into the framebuffer. */
-        if (SDL_MUSTLOCK(g_real) && SDL_LockSurface(g_real) < 0) {
+        if (SDL_MUSTLOCK(g_real) && real_LockSurface(g_real) < 0) {
             if (SDL_MUSTLOCK(g_fake))
-                SDL_UnlockSurface(g_fake);
+                real_UnlockSurface(g_fake);
             return;
         }
         dst = (uint8_t *)g_real->pixels;
@@ -560,7 +641,7 @@ static void blit_upscaled(void)
             memcpy(dst + (size_t)y * g_real->pitch, g_stage + (size_t)y * g_real->w,
                    row_bytes);
         if (SDL_MUSTLOCK(g_real))
-            SDL_UnlockSurface(g_real);
+            real_UnlockSurface(g_real);
 
         if (prof) {
             double t2 = now_us(), dt = t2 - t0;
@@ -576,7 +657,7 @@ static void blit_upscaled(void)
         }
 
         if (SDL_MUSTLOCK(g_fake))
-            SDL_UnlockSurface(g_fake);
+            real_UnlockSurface(g_fake);
     }
 }
 
@@ -592,8 +673,11 @@ SDL_Surface *SDL_SetVideoMode(int width, int height, int bpp, Uint32 flags)
     g_real = NULL;
 
     /* Nothing to do if we don't know the panel mode, if it is what the program
-       already wants, or if this isn't a format the scaler handles. */
-    if (!target_mode(&nw, &nh) || (nw == width && nh == height) || bpp != 32)
+       already wants, if this isn't a format the scaler handles, or if the SDL
+       helpers the scaler needs are not all present - pass through rather than
+       hand back a surface we cannot then present. */
+    if (!target_mode(&nw, &nh) || (nw == width && nh == height) || bpp != 32 ||
+        !helpers_ready())
         return real_SetVideoMode(width, height, bpp, flags);
 
     g_real = real_SetVideoMode(nw, nh, bpp, flags);
@@ -612,16 +696,16 @@ SDL_Surface *SDL_SetVideoMode(int width, int height, int bpp, Uint32 flags)
      *
      * Falls back to software if the GFX heap cannot satisfy it, which is worse
      * than nothing only for the themes that need the accelerated path. */
-    g_fake = SDL_CreateRGBSurface(SDL_HWSURFACE, width, height,
-                                  g_real->format->BitsPerPixel,
-                                  g_real->format->Rmask, g_real->format->Gmask,
-                                  g_real->format->Bmask, g_real->format->Amask);
+    g_fake = real_CreateRGBSurface(SDL_HWSURFACE, width, height,
+                                   g_real->format->BitsPerPixel,
+                                   g_real->format->Rmask, g_real->format->Gmask,
+                                   g_real->format->Bmask, g_real->format->Amask);
     g_fake_hw = (g_fake != NULL);
     if (!g_fake)
-        g_fake = SDL_CreateRGBSurface(SDL_SWSURFACE, width, height,
-                                      g_real->format->BitsPerPixel,
-                                      g_real->format->Rmask, g_real->format->Gmask,
-                                      g_real->format->Bmask, g_real->format->Amask);
+        g_fake = real_CreateRGBSurface(SDL_SWSURFACE, width, height,
+                                       g_real->format->BitsPerPixel,
+                                       g_real->format->Rmask, g_real->format->Gmask,
+                                       g_real->format->Bmask, g_real->format->Amask);
     if (!g_fake)
         return g_real; /* fail open: unscaled, but running */
 
@@ -634,7 +718,7 @@ SDL_Surface *SDL_SetVideoMode(int width, int height, int bpp, Uint32 flags)
        Seen on a Mini Flip as horizontal streaks of noise over an otherwise
        correct menu, but only with themes that do not repaint a full opaque
        background every frame. */
-    SDL_FillRect(g_fake, NULL, SDL_MapRGB(g_fake->format, 0, 0, 0));
+    real_FillRect(g_fake, NULL, real_MapRGB(g_fake->format, 0, 0, 0));
 
     return g_fake;
 }
