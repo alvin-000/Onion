@@ -570,10 +570,15 @@ static void blit_upscaled(void)
                same pass that pulls the frame out of uncached memory also puts
                it somewhere the 2D engine can read. Same cost either way. */
             int use_gfx = gfxp_init(g_fake->w, g_fake->h, g_real->w, g_real->h);
-            void *mirror_into = use_gfx ? gfxp_src() : (void *)g_srcmirror;
             g_gfx_ok = gfxp_ready();
 
             if (g_fake_hw && (use_gfx || ensure_srcmirror(g_fake->w, g_fake->h))) {
+                /* Read g_srcmirror only after ensure_srcmirror() has run: on
+                   the first present it is still NULL before that call, and
+                   reading it early made this a NULL memcpy whenever the 2D
+                   engine was unavailable. Masked for as long as the engine
+                   never failed; found the first time it did. */
+                void *mirror_into = use_gfx ? gfxp_src() : (void *)g_srcmirror;
                 const int srow = g_fake->w * 4;
                 for (y = 0; y < g_fake->h; y++)
                     memcpy((uint8_t *)mirror_into + (size_t)y * srow,

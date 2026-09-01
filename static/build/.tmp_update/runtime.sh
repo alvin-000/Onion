@@ -570,7 +570,16 @@ launch_game() {
             fi
 
             # make the cmd_to_run shell env aware of the new timezone
-            TZ="$TZ_VALUE" $sysdir/cmd_to_run.sh
+            #
+            # A listed direct writer runs at 640x480 instead of the panel mode
+            # - see app_is_direct_writer(). Wrapping the launch here rather
+            # than the app's own launch.sh means an app update cannot undo it,
+            # and apps Onion does not ship can be covered at all.
+            if [ $is_game -eq 0 ] && app_is_direct_writer; then
+                TZ="$TZ_VALUE" $sysdir/script/run_at_480p.sh $sysdir/cmd_to_run.sh
+            else
+                TZ="$TZ_VALUE" $sysdir/cmd_to_run.sh
+            fi
             retval=$?
 
             # Restore the session mode in case the game changed it behind
@@ -736,6 +745,39 @@ launch_game_postprocess() {
         set_prev_state "app"
         check_off_order "End"
     fi
+}
+
+# Whether the app about to launch writes the framebuffer itself and must be
+# given 640x480 rather than the panel's native mode. Reads
+# script/direct_writer_apps.list, one path substring per line; see that file
+# for what qualifies and why third-party apps are listed rather than patched.
+#
+# A direct writer cannot be scaled - there is no present to hook - and must not
+# be pinned: pinned, it believes it got the 640x480 it asked for and writes
+# 640-pixel rows into a 752-wide framebuffer, every row landing 112 pixels
+# further off than the last.
+#
+# Silent and false when the list is missing, so a truncated install launches
+# apps exactly as before.
+app_is_direct_writer() {
+    _dw_list=$sysdir/script/direct_writer_apps.list
+
+    if [ ! -f "$_dw_list" ] || [ ! -f "$sysdir/cmd_to_run.sh" ]; then
+        return 1
+    fi
+
+    while IFS= read -r _dw_pat; do
+        case "$_dw_pat" in
+        '' | \#*) continue ;;
+        esac
+
+        if grep -qF "$_dw_pat" $sysdir/cmd_to_run.sh; then
+            log "app launch: '$_dw_pat' is a listed direct writer, running at 640x480"
+            return 0
+        fi
+    done < "$_dw_list"
+
+    return 1
 }
 
 get_full_resolution_path() {

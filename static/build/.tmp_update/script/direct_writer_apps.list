@@ -1,0 +1,24 @@
+# Apps that write /dev/fb0 themselves and cannot be given the panel's native
+# mode. Onion runs anything listed here at 640x480 (see run_at_480p.sh) and
+# restores the session mode on exit.
+#
+# One substring per line, matched against the launch command. Use enough of the
+# path to be unambiguous - it is matched literally, not as a glob. Lines
+# starting with # and blank lines are ignored.
+#
+# Only add an app after confirming it is a direct writer. Two shapes qualify,
+# and the second is invisible to the SDL 1.2 test in run_at_480p.sh:
+#
+#   SDL 1.2:  imports SDL_SetVideoMode, imports no SDL_Flip/SDL_UpdateRect(s)
+#   SDL2:     imports none of those, presents through MI_GFX into a /dev/fb0
+#             mapping of its own
+#
+# Third-party apps are listed here rather than patched in place, so an app
+# update cannot silently undo the fix.
+
+# PICO-8 wrapper (XK9274/pico-8-wrapper-miyoo). Ships its own SDL2 with the
+# mmiyoo backend, which mmaps the framebuffer and blits with MI_GFX at a stride
+# taken from its own FB_W. Confirmed on a Mini Flip: garbled at 752x560, clean
+# under this wrap. Not the same as Onion's own PICO-8 or Fake8 packages, which
+# are unaffected and must not be listed.
+/mnt/SDCARD/App/pico/

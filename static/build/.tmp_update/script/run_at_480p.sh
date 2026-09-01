@@ -21,6 +21,23 @@
 #
 #     arm-linux-gnueabihf-readelf --dyn-syms <binary> | grep SDL_
 #
+#   That test only sees SDL 1.2. An SDL2 app imports none of those three
+#   symbols and still reads as "not a direct writer" while being one - the
+#   PICO-8 wrapper (XK9274/pico-8-wrapper-miyoo) ships its own SDL2 with the
+#   mmiyoo backend, which mmaps /dev/fb0 and presents with MI_GFX_BitBlit at a
+#   stride of its own. Confirmed on a Mini Flip: pico8_dyn has zero
+#   SDL_SetVideoMode and zero SDL_Flip references. For SDL2, look for the
+#   window API and the absence of any SDL present path:
+#
+#     strings <binary> | grep -c SDL_CreateWindow    # non-zero: SDL2
+#
+#   and check the backend it loads for an open("/dev/fb0") plus MI_GFX/MI_SYS
+#   rather than an SDL present call.
+#
+#   Onion applies this automatically to the apps in
+#   script/direct_writer_apps.list; wrapping a launcher by hand is still
+#   supported and is what covers anything the list does not name.
+#
 #   No-op on 640x480 panels and wherever change_resolution.sh is unavailable, so
 #   it is safe to wrap a launcher unconditionally.
 #
@@ -47,4 +64,9 @@ if [ -x "$ChangeRes" ]; then
     fi
 fi
 
+# Exit explicitly with the command's status. runtime.sh reads it to decide
+# whether to raise "Fatal error occurred", and whether an EXIT trap's own last
+# command replaces the script's status is shell-dependent - so do not leave it
+# to the trap.
 "$@"
+exit $?
