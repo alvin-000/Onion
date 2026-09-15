@@ -571,11 +571,12 @@ launch_game() {
 
             # make the cmd_to_run shell env aware of the new timezone
             #
-            # A listed direct writer runs at 640x480 instead of the panel mode
-            # - see app_is_direct_writer(). Wrapping the launch here rather
-            # than the app's own launch.sh means an app update cannot undo it,
-            # and apps Onion does not ship can be covered at all.
-            if [ $is_game -eq 0 ] && app_is_direct_writer; then
+            # An app runs at 640x480 instead of the panel mode when it is a
+            # listed direct writer, or when the user has dropped run_as_480p
+            # into its folder - see app_wants_480p(). Wrapping the launch here
+            # rather than the app's own launch.sh means an app update cannot
+            # undo it, and apps Onion does not ship can be covered at all.
+            if [ $is_game -eq 0 ] && app_wants_480p; then
                 TZ="$TZ_VALUE" $sysdir/script/run_at_480p.sh $sysdir/cmd_to_run.sh
             else
                 TZ="$TZ_VALUE" $sysdir/cmd_to_run.sh
@@ -747,6 +748,86 @@ launch_game_postprocess() {
     fi
 }
 
+# The directory an app launch runs in, echoed on stdout. Non-zero when the
+# command is not an app launch.
+#
+# This is where the launch script lives, which is NOT always the app's own
+# folder - see app_root_dir(), which is what callers usually want.
+#
+# Two things write an app launch, and they differ after the first clause:
+#
+#   MainUI         cd D; chmod a+x D/launch.sh; LD_PRELOAD=... D/launch.sh
+#   set_cmd_app()  cd D; chmod a+x ./launch.sh; LD_PRELOAD=... ./launch.sh
+#
+# (the second is src/common/utils/apps.h, behind keymon's X/Y shortcut and
+# Tweaks). Both open with "cd D;", so the directory is the text between "cd "
+# and the first ";" either way - which is also why reading it here covers a
+# shortcut launch, where direct_writer_apps.list's trailing-slash entries do
+# not match the relative path.
+#
+# Parsed that way rather than with the cut -d' ' -f 2 in
+# get_full_resolution_path(), which only covers /mnt/SDCARD/App/ and truncates
+# at the first space: this has to reach RApp and wherever else a third-party app
+# installs itself, and an app folder with a space in its name is not ours to
+# forbid.
+#
+# Safe to call after the LD_PRELOAD sed in launch_game() - that rewrites the
+# assignment, not the "cd " the line opens with.
+#
+# The one shape it cannot read is a folder path containing a ";", which would
+# not survive the launch line either.
+app_launch_dir() {
+    [ -f "$sysdir/cmd_to_run.sh" ] || return 1
+
+    _al_cmd=$(head -n 1 "$sysdir/cmd_to_run.sh")
+
+    case "$_al_cmd" in
+    "cd "*';'*) ;;
+    *) return 1 ;;
+    esac
+
+    _al_dir=${_al_cmd#cd }
+    _al_dir=${_al_dir%%;*}
+
+    [ -n "$_al_dir" ] && [ -d "$_al_dir" ] || return 1
+
+    echo "$_al_dir"
+}
+
+# The app's own folder - the one holding config.json. That is the folder a user
+# sees in the apps list, so it is where they put a flag file.
+#
+# It is not always where the launch runs. MainUI cd's to the directory holding
+# the launch script, and the two differ as soon as config.json's "launch" names
+# a subdirectory. Measured on a Mini Flip: the PICO-8 wrapper declares
+# "script/launch.sh", and MainUI writes
+#
+#     cd /mnt/SDCARD/App/pico/script; chmod a+x ./launch.sh; LD_PRELOAD=... ./launch.sh
+#
+# so the launch directory is App/pico/script while the app is App/pico. Reading
+# only the cd target finds no flag on any app packaged that way.
+#
+# Walks up looking for config.json, which is what makes a folder an app. Bounded
+# three levels and stopped at /mnt/SDCARD, so a stray file in App/ or RApp/ can
+# never be picked up and applied to every app underneath it.
+app_root_dir() {
+    _ar_dir=$(app_launch_dir) || return 1
+    _ar_n=0
+
+    while [ -n "$_ar_dir" ] && [ "$_ar_dir" != "/" ] && [ "$_ar_dir" != "/mnt/SDCARD" ]; do
+        if [ -f "$_ar_dir/config.json" ]; then
+            echo "$_ar_dir"
+            return 0
+        fi
+
+        [ $_ar_n -ge 3 ] && break
+        _ar_dir=$(dirname "$_ar_dir")
+        _ar_n=$((_ar_n + 1))
+    done
+
+    return 1
+}
+
 # Whether the app about to launch writes the framebuffer itself and must be
 # given 640x480 rather than the panel's native mode. Reads
 # script/direct_writer_apps.list, one path substring per line; see that file
@@ -780,14 +861,64 @@ app_is_direct_writer() {
     return 1
 }
 
+# Whether the app about to launch should be given 640x480 rather than the
+# panel's native mode, for either of the two reasons that can be true:
+#
+#   run_as_480p in the app's own folder   a user's manual override
+#   a line in direct_writer_apps.list     one we ship the fix for
+#
+# The flag file is the fallback for an app that scaling stops from starting at
+# all. A user can drop it in without editing anything under .tmp_update and
+# without waiting for a release. It is checked before - and independently of -
+# the list, so it still works on an install missing the list. Confirming an app
+# and listing it is still the durable fix; this is what a user has meanwhile.
+#
+# Same treatment either way: run_at_480p.sh holds the framebuffer at 640x480 for
+# the app's lifetime and restores the session mode after. The GOP scaler
+# stretches that to fill the panel, so it is full-screen 480p, not 480p sitting
+# in a 560p box.
+app_wants_480p() {
+    # The app's own folder first - that is where a user looking at the apps list
+    # would put the file. The launch directory too, because for an app whose
+    # launch script sits in a subfolder that is the other plausible place to put
+    # it, and being forgiving here costs nothing.
+    for _w4_dir in "$(app_root_dir)" "$(app_launch_dir)"; do
+        if [ -n "$_w4_dir" ] && [ -f "$_w4_dir/run_as_480p" ]; then
+            log "app launch: $_w4_dir/run_as_480p present, running at 640x480"
+            return 0
+        fi
+    done
+
+    app_is_direct_writer
+}
+
 get_full_resolution_path() {
     if [ -f /tmp/new_res_available ]; then
         # Check if the program to be launched supports 560p
         # Different programs need different checks (Apps vs Ports vs the rest)
-        if grep -qF "/mnt/SDCARD/App/" $sysdir/cmd_to_run.sh; then
-            # ----- App launch ----- #
+        _fr_dir=$(app_root_dir)
 
-            echo "$(cat $sysdir/cmd_to_run.sh | cut -d' ' -f 2 | sed 's/;/\/full_resolution/')"
+        if [ -n "$_fr_dir" ]; then
+            # ----- App launch ----- #
+            #
+            # The app's own folder, from app_root_dir(). This used to be
+            #
+            #     cut -d' ' -f 2 | sed 's/;/\/full_resolution/'
+            #
+            # which reads the directory the launch runs in, and that is only the
+            # app's folder when config.json's "launch" is a bare filename. For an
+            # app packaged with its launch script in a subfolder - the PICO-8
+            # wrapper's "script/launch.sh" - the marker was looked for one level
+            # too deep and silently never found. The old parse also truncated any
+            # folder name containing a space, and matched on a literal
+            # /mnt/SDCARD/App/ so a cd-style RApp launch fell through to the
+            # branch below, which expects a quoted launch.sh and matches nothing.
+            #
+            # Keying on "did an app folder resolve" rather than on a path prefix
+            # fixes all three. Game, emu and port launches do not start with
+            # "cd ", so app_root_dir() returns nothing for them and the order of
+            # the branches below is unchanged.
+            echo "$_fr_dir/full_resolution"
 
         elif grep -qF "/mnt/SDCARD/Roms/PORTS/" $sysdir/cmd_to_run.sh; then
             # ----- Port launch ----- #

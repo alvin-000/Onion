@@ -15,6 +15,12 @@
 #
 # Third-party apps are listed here rather than patched in place, so an app
 # update cannot silently undo the fix.
+#
+# A user who hits an app that garbles or will not start does not have to wait
+# for a line here: an empty file named run_as_480p in that app's own folder
+# gets it exactly the same treatment. See app_wants_480p() in runtime.sh. That
+# is the manual fallback; listing the app here once it is confirmed is the
+# durable fix, and is what covers everybody else.
 
 # PICO-8 wrapper (XK9274/pico-8-wrapper-miyoo). Ships its own SDL2 with the
 # mmiyoo backend, which mmaps the framebuffer and blits with MI_GFX at a stride

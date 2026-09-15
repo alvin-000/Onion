@@ -34,9 +34,20 @@
 #   and check the backend it loads for an open("/dev/fb0") plus MI_GFX/MI_SYS
 #   rather than an SDL present call.
 #
-#   Onion applies this automatically to the apps in
-#   script/direct_writer_apps.list; wrapping a launcher by hand is still
-#   supported and is what covers anything the list does not name.
+#   Three things route an app here, and they are equivalent once it arrives:
+#
+#     script/direct_writer_apps.list      apps Onion knows about
+#     run_as_480p in the app's folder     a user's manual override, for an app
+#                                         that garbles or will not start and is
+#                                         not on the list yet
+#     a wrapper in the app's launch.sh    what Onion's own apps do
+#
+#   The first two are applied from the launch path by app_wants_480p() in
+#   runtime.sh, so an app update cannot undo them.
+#
+#   The framebuffer mode change is what makes this full-screen: the GOP scaler
+#   stretches 640x480 to fill a 752x560 panel. An app left unscaled at the
+#   panel's own mode is the case that lands in a corner, not this one.
 #
 #   No-op on 640x480 panels and wherever change_resolution.sh is unavailable, so
 #   it is safe to wrap a launcher unconditionally.
